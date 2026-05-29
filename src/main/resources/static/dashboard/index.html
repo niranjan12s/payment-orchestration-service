@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Payment Orchestrator — Interactive Deck & API Playground</title>
+  <!-- Google Fonts: Outfit & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,500;1,300&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css?v=2.4.0">
+</head>
+<body>
+
+  <!-- Background Gradients -->
+  <div class="bg-gradient bg-grad-1"></div>
+  <div class="bg-gradient bg-grad-2"></div>
+
+  <!-- Main Container -->
+  <div class="container">
+    
+    <!-- Header -->
+    <header class="main-header glass">
+      <div class="header-logo">
+        <div>
+          <h1>Payment Orchestrator</h1>
+          <p class="subtitle">Interactive Architecture & Observability Console</p>
+        </div>
+      </div>
+      <div class="tech-badges">
+        <span class="badge badge-java">Java 21</span>
+        <span class="badge badge-spring">Spring Boot 3.3</span>
+        <span class="badge badge-pg">PostgreSQL 15</span>
+        <span class="badge badge-redis">Redis 7</span>
+        <span class="badge badge-kafka">Kafka</span>
+      </div>
+    </header>
+
+    <!-- Tab Navigation -->
+    <nav class="tab-navigation glass">
+      <button class="tab-btn active" onclick="switchTab('architecture')">
+        Interactive Architecture
+      </button>
+      <button class="tab-btn" onclick="switchTab('playground')">
+        API Playground
+      </button>
+      <button class="tab-btn" onclick="switchTab('observability')">
+        Observability & Metrics
+      </button>
+      <button class="tab-btn" onclick="switchTab('simulator')">
+        State Machine Simulator
+      </button>
+    </nav>
+
+    <!-- Content Sections -->
+    <main class="tab-content">
+
+      <!-- ================= TAB 1: ARCHITECTURE ================= -->
+      <section id="tab-architecture" class="tab-pane active">
+        <div class="architecture-layout-container">
+          
+          <!-- Flowchart Canvas (Full Width) -->
+          <div class="canvas-card glass full-width">
+            <div class="card-header">
+              <h3>Synchronous Ingestion Pipeline & Asynchronous Recovery Loops</h3>
+              <span class="pulse-indicator"></span>
+            </div>
+            
+            <div class="svg-container">
+              <svg viewBox="0 0 1000 450" width="100%" height="100%">
+                <defs>
+                  <linearGradient id="neonGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+                    <stop offset="0%" stop-color="#3b82f6" />
+                    <stop offset="50%" stop-color="#8b5cf6" />
+                    <stop offset="100%" stop-color="#10b981" />
+                  </linearGradient>
+                </defs>
+                <!-- Connection Lines -->
+                <path d="M 160 225 L 200 225" class="connector-line" />
+                <path d="M 360 225 L 400 225" class="connector-line" />
+                <path d="M 560 225 L 600 225" class="connector-line" />
+                <path d="M 760 225 L 800 225" class="connector-line" />
+                
+                <!-- Workers Async Loops -->
+                <path d="M 690 265 L 690 310" class="connector-line dashed" />
+                <path d="M 690 185 L 690 140" class="connector-line dashed" />
+                
+                <!-- Ingestion Node -->
+                <g class="node-hotspot" onclick="revealDetail('client')">
+                  <rect x="10" y="185" width="150" height="80" rx="8" class="node-rect blue" />
+                  <text x="85" y="215" class="node-title">Merchant Client</text>
+                  <text x="85" y="235" class="node-sub">Generates Headers</text>
+                  <text x="85" y="250" class="node-sub font-mono">X-Nonce / Signature</text>
+                </g>
+ 
+                <!-- Security Filter -->
+                <g class="node-hotspot" onclick="revealDetail('security')">
+                  <rect x="200" y="185" width="160" height="80" rx="8" class="node-rect purple" />
+                  <text x="280" y="210" class="node-title">SecurityFilter</text>
+                  <text x="280" y="230" class="node-sub">HMAC Clock Check</text>
+                  <text x="280" y="245" class="node-sub font-mono">Redis Nonce Store</text>
+                </g>
+ 
+                <!-- Idempotency Filter -->
+                <g class="node-hotspot" onclick="revealDetail('idempotency')">
+                  <rect x="400" y="185" width="160" height="80" rx="8" class="node-rect purple" />
+                  <text x="480" y="210" class="node-title">IdempotencyFilter</text>
+                  <text x="480" y="230" class="node-sub">Canonical Hashing</text>
+                  <text x="480" y="245" class="node-sub font-mono">SHA-256 Lookup</text>
+                </g>
+ 
+                <!-- Transaction Boundary -->
+                <g class="node-hotspot" onclick="revealDetail('transaction')">
+                  <rect x="600" y="185" width="160" height="80" rx="8" class="node-rect green" />
+                  <text x="680" y="210" class="node-title">JPA Service</text>
+                  <text x="680" y="230" class="node-sub">4-Write Atomic Commit</text>
+                  <text x="680" y="245" class="node-sub font-mono">@Transactional</text>
+                </g>
+ 
+                <!-- PSP provider routing -->
+                <g class="node-hotspot" onclick="revealDetail('psp')">
+                  <rect x="800" y="185" width="160" height="80" rx="8" class="node-rect indigo" />
+                  <text x="880" y="215" class="node-title">PSP Router</text>
+                  <text x="880" y="235" class="node-sub">Resilience4j CB</text>
+                  <text x="880" y="250" class="node-sub font-mono">Provider Dispatch</text>
+                </g>
+ 
+                <!-- Scheduled Recovery Workers -->
+                <g class="node-hotspot" onclick="revealDetail('workers')">
+                  <rect x="600" y="310" width="180" height="80" rx="8" class="node-rect orange" />
+                  <text x="690" y="335" class="node-title">Reconciliation & Retry</text>
+                  <text x="690" y="355" class="node-sub">Scheduled Workers</text>
+                  <text x="690" y="370" class="node-sub font-mono">SKIP LOCKED (2s/45s)</text>
+                </g>
+ 
+                <!-- Outbox Poller Worker -->
+                <g class="node-hotspot" onclick="revealDetail('outbox')">
+                  <rect x="600" y="60" width="180" height="80" rx="8" class="node-rect indigo" />
+                  <text x="690" y="85" class="node-title">Outbox Poller Worker</text>
+                  <text x="690" y="105" class="node-sub">At-Least-Once Publisher</text>
+                  <text x="690" y="120" class="node-sub font-mono">SKIP LOCKED (1.5s)</text>
+                </g>
+
+                <!-- Floating Glowing Flow Marker removed -->
+              </svg>
+            </div>
+            <div class="card-footer">
+              <p>Select any node in the visual pipeline diagram above to inspect active rules, database transaction configurations, and security exclusions.</p>
+            </div>
+          </div>
+
+          <!-- Slide-out Node Details Card (Hidden by default, slides on top/right) -->
+          <div class="detail-overlay-panel glass" id="detailPanel">
+            <div class="panel-header">
+              <h4 id="detailTitle">Node Title</h4>
+              <button class="close-panel-btn" onclick="closeDetailPanel()">Close</button>
+            </div>
+            
+            <div class="detail-content" id="detailContent">
+              <div class="node-tag" id="nodeTag">Safe Path</div>
+              
+              <div class="metric-section">
+                <h5>PCI Scope Boundary</h5>
+                <p id="pciScope">Vault tokenization isolation protects primary credit card numbers completely.</p>
+              </div>
+
+              <div class="detail-info-block">
+                <h5>Key Technical Rules</h5>
+                <ul id="nodeRules">
+                  <li>Rule 1</li>
+                  <li>Rule 2</li>
+                </ul>
+              </div>
+
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <!-- ================= TAB 2: PLAYGROUND ================= -->
+      <section id="tab-playground" class="tab-pane">
+        <div class="playground-layout">
+          
+          <!-- Selector Panel -->
+          <div class="api-selector-panel glass">
+            <h4>API & Scenario Directory</h4>
+            
+            <div class="selector-group">
+              <span class="group-title">POST /api/v1/payments-orchestration/payments</span>
+              <div class="selector-options">
+                <button class="selector-btn active" onclick="loadVariation('auth_card_success')">
+                  <span class="badge badge-success">POST</span> Card Success (PSP A)
+                </button>
+                <button class="selector-btn" onclick="loadVariation('auth_upi_success')">
+                  <span class="badge badge-success">POST</span> UPI Success (PSP B)
+                </button>
+                <button class="selector-btn" onclick="loadVariation('auth_nonce')">
+                  <span class="badge badge-danger">POST</span> Nonce Replay Attack
+                </button>
+                <button class="selector-btn" onclick="loadVariation('auth_idempotency')">
+                  <span class="badge badge-warning">POST</span> Idempotency Replay
+                </button>
+              </div>
+            </div>
+
+            <div class="selector-group">
+              <span class="group-title">POST /api/v1/payments-orchestration/webhooks/{provider}</span>
+              <div class="selector-options">
+                <button class="selector-btn" onclick="loadVariation('webhook_success')">
+                  <span class="badge badge-success">POST</span> Late Authorization (PENDING -> AUTH)
+                </button>
+                <button class="selector-btn" onclick="loadVariation('webhook_illegal')">
+                  <span class="badge badge-danger">POST</span> Contradictory Hook (FAILED -> AUTH)
+                </button>
+              </div>
+            </div>
+
+            <div class="selector-group">
+              <span class="group-title">GET /api/v1/payments-orchestration/payments</span>
+              <div class="selector-options">
+                <button class="selector-btn" onclick="loadVariation('get_intent')">
+                  <span class="badge" style="background: rgba(59, 130, 246, 0.15); color: #3b82f6; border: 1px solid rgba(59, 130, 246, 0.3);">GET</span> Retrieve by ID (intentId)
+                </button>
+                <button class="selector-btn" onclick="loadVariation('get_status')">
+                  <span class="badge" style="background: rgba(59, 130, 246, 0.15); color: #3b82f6; border: 1px solid rgba(59, 130, 246, 0.3);">GET</span> Lookup by Order ID (merchantOrderId)
+                </button>
+              </div>
+            </div>
+
+            <button class="btn btn-primary run-all-btn" onclick="runAllVariations()">
+              Run All Variations
+            </button>
+          </div>
+
+          <!-- Console & Editor Panel -->
+          <div class="playground-console">
+            
+            <!-- Code Editor Box -->
+            <div class="console-box glass">
+              <div class="console-header">
+                <span class="console-title">Request Console & Headers</span>
+                <span class="console-status font-mono" id="reqPath">/payments</span>
+              </div>
+              
+              <!-- Dynamic Header Editors -->
+              <p class="playground-notice">All security headers are dynamically pre-calculated and injected on request trigger. You can override them below if desired:</p>
+              <div class="headers-editor-box">
+                <div class="header-field">
+                  <label>Idempotency-Key</label>
+                  <input type="text" id="headerIdempotencyKey" placeholder="Auto-generated">
+                </div>
+                <div class="header-field">
+                  <label>X-Request-Id</label>
+                  <input type="text" id="headerRequestId" placeholder="Auto-generated">
+                </div>
+                <div class="header-field">
+                  <label>X-Timestamp</label>
+                  <input type="text" id="headerTimestamp" placeholder="Auto-generated">
+                </div>
+                <div class="header-field">
+                  <label>X-Nonce</label>
+                  <input type="text" id="headerNonce" placeholder="Auto-generated">
+                </div>
+                <div class="header-field">
+                  <label>X-Signature</label>
+                  <input type="text" id="headerSignature" placeholder="Auto-generated" readonly>
+                </div>
+              </div>
+
+              <div class="console-header" style="border-top: 1px solid rgba(255, 255, 255, 0.05); border-radius: 0;">
+                <span class="console-title" id="editorTitle">Request Editor (JSON Payload)</span>
+              </div>
+              
+              <!-- Dynamic Query Parameter Input for GET Requests -->
+              <div id="queryParamContainer" style="display: none; padding: 16px; border-bottom: 1px solid rgba(255, 255, 255, 0.05); background: rgba(255, 255, 255, 0.01);">
+                <label id="queryParamLabel" style="display: block; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 8px; color: var(--accent-light); font-weight: 700;">Payment Intent ID</label>
+                <input type="text" id="queryParamInput" placeholder="Enter ID..." style="width: 100%; padding: 10px 14px; background: rgba(0, 0, 0, 0.3); border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 6px; color: #fff; font-family: 'JetBrains Mono', monospace; font-size: 13px; outline: none; transition: border-color 0.2s;">
+              </div>
+              <textarea id="jsonEditor" class="code-editor" spellcheck="false">{
+  "merchant_id": "893c5d61-ff8b-4c07-9b24-7cb4bbd7c679",
+  "merchant_order_id": "ord_998877",
+  "transaction_amount": {
+    "amount": 1000,
+    "currency_code": "INR"
+  },
+  "settlement_amount": {
+    "amount": 1000,
+    "currency_code": "INR"
+  },
+  "payment_method_type": "CARD",
+  "payment_token_reference": "tok_card_success"
+}</textarea>
+              <div class="editor-actions">
+                <button class="btn btn-secondary" onclick="resetEditor()">Reset</button>
+                <button class="btn btn-accent" onclick="runSoloVariation()">Run Request</button>
+              </div>
+            </div>
+
+            <!-- Output Box -->
+            <div class="console-box glass" id="responseOutputBox">
+              <!-- Placeholder shown before any request is fired -->
+              <div id="outputPlaceholder" class="output-placeholder">
+                <div class="placeholder-icon">⚡</div>
+                <p>Run a request to see the response here.</p>
+              </div>
+
+              <!-- Actual output (hidden until first run) -->
+              <div id="outputReady" class="hidden">
+                <div class="console-header">
+                  <span class="console-title">Response Output</span>
+                  <div class="toggle-buttons">
+                    <button class="toggle-btn active" id="btnTable" onclick="toggleOutputMode('table')">Table</button>
+                    <button class="toggle-btn" id="btnRaw" onclick="toggleOutputMode('raw')">Raw JSON</button>
+                  </div>
+                </div>
+
+                <!-- Tabular/Structured Output -->
+                <div id="outputTable" class="output-container">
+                  <div class="response-status-card" id="respStatusCard">
+                    <span class="resp-badge badge-success" id="respStatusBadge">200 OK</span>
+                    <div>
+                      <h5 id="respScenarioTitle">—</h5>
+                      <p id="respDescription">—</p>
+                    </div>
+                  </div>
+
+                  <!-- PSP Simulator Config Hint -->
+                  <div id="pspConfigHint" class="psp-config-hint hidden"></div>
+
+                  <div class="results-table-grid" id="liveFieldsGrid"></div>
+                </div>
+
+                <!-- Raw Code Output -->
+                <div id="outputRaw" class="output-container hidden">
+                  <pre class="raw-pre"><code class="language-json" id="rawJsonOutput">{}</code></pre>
+                </div>
+              </div>
+            </div>
+
+          </div>
+
+        </div>
+      </section>
+
+      <!-- ================= TAB 3: OBSERVABILITY ================= -->
+      <section id="tab-observability" class="tab-pane">
+        <div class="observability-layout">
+          
+          <!-- Prometheus Panel -->
+          <div class="prom-panel glass">
+            <div class="panel-header">
+              <h4>Prometheus Scraper &amp; Metrics</h4>
+              <span class="badge badge-spring">GET /actuator/prometheus</span>
+            </div>
+            <div id="promRawView" class="prom-terminal">
+              <pre><code class="language-plaintext" id="promConsole"></code></pre>
+            </div>
+            <button class="btn btn-secondary font-mono" onclick="scrapeMetrics()">↻ Scrape Metrics</button>
+          </div>
+
+          <!-- Actuator & Health Panel -->
+          <div class="health-console-grid">
+            
+            <!-- Health Card -->
+            <div class="glass health-status-card">
+              <div class="card-header">
+                <h3>GET /actuator/health</h3>
+                <span class="badge badge-success" id="actuatorHealthBadge">UP</span>
+              </div>
+              <div class="health-detail-tree">
+                <div class="tree-item"><span class="status-dot success"></span> <strong>Database (Postgres)</strong>: UP <span class="dim">(SELECT 1 in 8ms)</span></div>
+                <div class="tree-item"><span class="status-dot success"></span> <strong>Cache (Redis)</strong>: UP <span class="dim">(PING ok, master_mode, AOF: yes)</span></div>
+                <div class="tree-item"><span class="status-dot success"></span> <strong>Queue (Kafka)</strong>: UP <span class="dim">(Cluster active, partitions: 3)</span></div>
+              </div>
+            </div>
+
+            <!-- MDC Pipeline log tracer -->
+            <div class="glass mdc-trace-card">
+              <div class="card-header">
+                <h3>MDC Trace Context Logger</h3>
+                <span class="dim">Hover/Click steps to view MDC headers</span>
+              </div>
+              
+              <div class="trace-steps">
+                <div class="trace-step" onmouseover="showLogTrace('filter')">1. Filter Ingestion</div>
+                <div class="trace-step" onmouseover="showLogTrace('transaction')">2. Commit Transaction</div>
+                <div class="trace-step" onmouseover="showLogTrace('psp')">3. PSP Call (Out of TX)</div>
+                <div class="trace-step" onmouseover="showLogTrace('outbox')">4. Outbox Worker Publish</div>
+              </div>
+
+              <div class="trace-output-console">
+                <pre class="trace-pre"><code class="language-json" id="traceOutput">Hover over any trace step above to see the correlated log signature and MDC header injections in real-time...</code></pre>
+              </div>
+            </div>
+
+          </div>
+
+        </div>
+      </section>
+
+      <!-- ================= TAB 4: STATE MACHINE ================= -->
+      <section id="tab-simulator" class="tab-pane">
+        <div class="simulator-layout">
+          
+          <!-- Node diagram -->
+          <div class="glass sim-diagram-card">
+            <div class="card-header">
+              <h3>JPA State Machine Transition Matrix</h3>
+              <span class="badge badge-java" id="simStatus">CURRENT: CREATED</span>
+            </div>
+
+            <div class="sim-nodes-container">
+              <div class="sim-node active" id="node-CREATED">CREATED</div>
+              <div class="arrow-trans">➔</div>
+              <div class="sim-node" id="node-PROCESSING">PROCESSING</div>
+              
+              <div class="branch-trans">
+                <div class="branch-line up">➔</div>
+                <div class="branch-line mid">➔</div>
+                <div class="branch-line down">➔</div>
+              </div>
+
+              <div class="branch-destinations">
+                <div class="sim-node" id="node-AUTHORIZED">AUTHORIZED</div>
+                <div class="sim-node" id="node-PENDING">PENDING</div>
+                <div class="sim-node" id="node-FAILED">FAILED</div>
+              </div>
+
+              <div class="review-path">
+                <div class="sim-node" id="node-MANUAL_REVIEW">MANUAL_REVIEW</div>
+              </div>
+            </div>
+            
+            <div class="sim-rules-feed" id="simFeed">
+              <div class="feed-item">Engine initialized. Status set to CREATED.</div>
+            </div>
+          </div>
+
+          <!-- Controls panel -->
+          <div class="glass sim-controls-card">
+            <h4>Trigger Transition Action</h4>
+            <p class="dim">Validate state matrix rules and terminal checks by manually triggering transitions.</p>
+            
+            <div class="sim-btn-grid">
+              <button class="sim-act-btn" onclick="triggerSimState('PROCESSING')">Trigger: CREATED ➔ PROCESSING</button>
+              <button class="sim-act-btn" onclick="triggerSimState('AUTHORIZED')">Resolve: PROCESSING ➔ AUTHORIZED</button>
+              <button class="sim-act-btn" onclick="triggerSimState('LATE_AUTH')">Late Webhook: PENDING ➔ AUTHORIZED</button>
+              <button class="sim-act-btn" onclick="triggerSimState('ILLEGAL_OVERRIDE')">Override: FAILED ➔ AUTHORIZED (Hoax)</button>
+              <button class="sim-act-btn" onclick="triggerSimState('ESCALATE')">Escalate: PENDING ➔ MANUAL_REVIEW</button>
+            </div>
+            
+            <button class="btn btn-secondary reset-sim-btn" onclick="resetSim()">Reset State Engine</button>
+          </div>
+
+        </div>
+      </section>
+
+    </main>
+
+  </div>
+
+  <script src="app.js?v=2.4.0"></script>
+</body>
+</html>

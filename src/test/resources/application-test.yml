@@ -1,0 +1,13 @@
+spring:
+  datasource:
+    url: jdbc:tc:postgresql:15-alpine:///payment_orchestrator
+    driver-class-name: org.testcontainers.jdbc.ContainerDatabaseDriver
+  data:
+    redis:
+      host: localhost
+      port: 63799
+  flyway:
+    enabled: true
+  jpa:
+    hibernate:
+      ddl-auto: validate

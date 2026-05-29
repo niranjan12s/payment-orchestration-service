@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+
+    <!-- Colored human-readable console appender for local development -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%clr(%d{yyyy-MM-dd HH:mm:ss.SSS}){faint} %clr(${LOG_LEVEL_PATTERN:-%5p}) %clr(${PID:- }){magenta} %clr(---){faint} %clr([%15.15t]){faint} %clr(%-40.40logger{39}){cyan} %clr(:){faint} %m [MDC: request_id=%X{request_id} correlation_id=%X{correlation_id} internal_request_id=%X{internal_request_id} intent_id=%X{intent_id} attempt_id=%X{attempt_id} merchant_id=%X{merchant_id} provider_name=%X{provider_name}]%n${LOG_EXCEPTION_CONVERSION_WORD:-%wEx}</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Structured JSON appender using Logstash Logback Encoder -->
+    <appender name="STRUCTURED_JSON" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <includeMdc>true</includeMdc>
+            <fieldNames>
+                <timestamp>timestamp</timestamp>
+                <level>level</level>
+                <thread>thread</thread>
+                <logger>logger</logger>
+                <message>message</message>
+                <exception>exception</exception>
+            </fieldNames>
+        </encoder>
+    </appender>
+
+    <!-- Logback profiles -->
+    <!-- Local profile: human-readable logging -->
+    <springProfile name="local">
+        <root level="INFO">
+            <appender-ref ref="CONSOLE" />
+        </root>
+    </springProfile>
+
+    <!-- Other/default profiles: structured JSON logging -->
+    <springProfile name="!local">
+        <root level="INFO">
+            <appender-ref ref="STRUCTURED_JSON" />
+        </root>
+    </springProfile>
+
+</configuration>

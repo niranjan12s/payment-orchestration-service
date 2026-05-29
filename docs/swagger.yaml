@@ -1,0 +1,1183 @@
+openapi: 3.0.3
+
+info:
+  title: Payment Orchestration API
+  description: |
+    Payment authorization orchestration platform responsible for PSP routing,
+    retry handling, idempotency enforcement, reconciliation, provider failover,
+    observability, and asynchronous recovery.
+
+    **Scope**: Authorization lifecycle only. Settlement, ledgering, capture,
+    refund, and acquiring workflows are explicitly out of scope.
+
+    ## Request Headers
+
+    | Header | Required | Behavior |
+    |---|---|---|
+    | `X-Request-Id` | YES | Rejected with `400` if absent or malformed. Echoed in all responses as `request_id`. |
+    | `X-Correlation-Id` | OPTIONAL | System generates a UUID and returns it if absent. Propagated across all internal service boundaries and downstream PSP calls. |
+    | `internal_request_id` | SYSTEM GENERATED | Always generated internally. Never exposed in API responses. Used solely for internal observability, log correlation, and tracing pipelines. |
+
+    ## Authentication & Key Rotation
+
+    Every request must be signed using HMAC-SHA256. The canonical string is:
+    ```
+    HTTP_METHOD + REQUEST_PATH + BODY_SHA256 + TIMESTAMP + NONCE + MERCHANT_ID
+    ```
+    Signature: `Base64(HMAC_SHA256(merchant_secret, canonical_string))`
+
+    Merchant secrets are stored in a **secrets manager / KMS**, never in application config.
+    Keys are versioned (e.g. `merchant_key_v1`, `merchant_key_v2`). During a rotation window
+    the system validates against both the active key and the previous grace-period key,
+    but always signs outbound material with the newest key only. Once the grace period
+    expires the old key is invalidated.
+
+    ## Replay Protection
+
+    - `X-Timestamp` must be within ±5 minutes of server time. Short validity window minimises replay exposure.
+    - `X-Nonce` must be unique per merchant per 10-minute window.
+    - Nonce cache is backed by **Redis with persistence enabled** and a **replicated topology** to survive restarts without reopening replay windows.
+    - All nonce reuse attempts are written to a **nonce replay audit log** for fraud and security analysis regardless of outcome.
+
+    ## Idempotency
+
+    - All `POST` requests require an `Idempotency-Key` header.
+    - Same key + same payload → cached response returned, no re-processing.
+    - Same key + different payload → `409 Conflict`.
+    - Keys expire after **24 hours**.
+
+    ## Async Worker Schedules
+
+    | Worker | Interval |
+    |---|---|
+    | Outbox publisher | Every 1–2 seconds (polling) |
+    | Reconciliation worker | Configurable, default 30–60 seconds |
+    | Retry worker | Exponential backoff; interval grows per retry count |
+
+    ## Payment Lifecycle States
+
+    | State | Meaning |
+    |---|---|
+    | `CREATED` | Payment intent persisted, PSP call not yet made |
+    | `PROCESSING` | PSP request in flight |
+    | `AUTHORIZED` | Issuer reserved funds — NOT yet settled |
+    | `FAILED` | Definitive, unrecoverable failure |
+    | `PENDING` | Outcome uncertain (timeout/network failure) — async resolution in progress |
+    | `SUPERSEDED` | This attempt replaced by a successful retry attempt |
+
+    > **AUTHORIZED ≠ SETTLED.** Authorization means the issuer has reserved
+    > funds. Actual settlement occurs through card network/acquirer rails and
+    > is outside this system's scope.
+
+  version: 1.0.0
+  contact:
+    name: Backend Core Engineering Team
+
+servers:
+  - url: https://api.example.com
+    description: Production
+  - url: https://sandbox.example.com
+    description: Sandbox
+
+tags:
+  - name: Payments
+    description: Payment authorization lifecycle operations
+  - name: Webhooks
+    description: PSP callback ingestion
+
+# ─────────────────────────────────────────────
+# PATHS
+# ─────────────────────────────────────────────
+paths:
+
+  /api/v1/payments-orchestration/payments:
+    post:
+      tags: [Payments]
+      summary: Create Payment
+      description: |
+        Initiates a payment authorization. The system:
+        1. Validates schema, auth signature, idempotency, and business rules.
+        2. Atomically persists `payment_intent`, `payment_attempt`, `payment_event`,
+           and `payment_outbox` in a single DB transaction **before** calling any PSP.
+        3. Routes to the appropriate PSP connector based on payment method, currency,
+           geography, and provider health.
+        4. Returns synchronously with `AUTHORIZED`, `FAILED`, or `PENDING`.
+
+        **Timeout ≠ Failure.** A PSP timeout results in `PENDING` status, not `FAILED`.
+        The reconciliation worker resolves uncertain states asynchronously.
+
+        **Double-charge protection.** The system never immediately fails over to
+        another PSP on an ambiguous timeout, as the original PSP may still succeed.
+      operationId: createPayment
+      parameters:
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/XCorrelationId'
+        - $ref: '#/components/parameters/XTimestamp'
+        - $ref: '#/components/parameters/XNonce'
+        - $ref: '#/components/parameters/XSignature'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreatePaymentRequest'
+            examples:
+              card_usd_to_inr:
+                summary: Card payment, cross-currency (USD -> INR)
+                value:
+                  merchant_id: "550e8400-e29b-41d4-a716-446655440000"
+                  merchant_order_id: "ORDER-20260527-001"
+                  payment_method_type: "CARD"
+                  payment_token_reference: "vault_token_abc123"
+                  transaction_amount:
+                    currency_code: "USD"
+                    amount: 100.00
+                  settlement_amount:
+                    currency_code: "INR"
+                    amount: 8300.00
+                  metadata:
+                    source: "checkout"
+                    device_type: "mobile"
+              upi_inr:
+                summary: UPI payment, single currency (INR)
+                value:
+                  merchant_id: "550e8400-e29b-41d4-a716-446655440000"
+                  merchant_order_id: "ORDER-20260527-002"
+                  payment_method_type: "UPI"
+                  payment_token_reference: "upi_handle_encrypted_xyz"
+                  transaction_amount:
+                    currency_code: "INR"
+                    amount: 500.00
+                  settlement_amount:
+                    currency_code: "INR"
+                    amount: 500.00
+                  metadata:
+                    source: "mobile_app"
+      responses:
+        '200':
+          description: |
+            Payment successfully authorized. Issuer has reserved funds.
+            Note: This does not mean the payment is settled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentAuthorizedResponse'
+              example:
+                intent_id: "7f3e2c1a-4b5d-6e7f-8a9b-0c1d2e3f4a5b"
+                attempt_id: "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d"
+                merchant_order_id: "ORDER-20260527-001"
+                provider_name: "PSP_A"
+                provider_reference: "provider_tx_9f8e7d6c"
+                status: "AUTHORIZED"
+                transaction_amount:
+                  currency_code: "USD"
+                  amount: 100.00
+                settlement_amount:
+                  currency_code: "INR"
+                  amount: 8300.00
+                timestamp: "2026-05-27T12:00:00Z"
+
+        '202':
+          description: |
+            Payment outcome is uncertain. The PSP request timed out or returned
+            an ambiguous state. The reconciliation worker will resolve this
+            asynchronously. Poll `GET /payments/{intent_id}/status` for updates,
+            or listen for webhook callbacks.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentPendingResponse'
+              example:
+                intent_id: "7f3e2c1a-4b5d-6e7f-8a9b-0c1d2e3f4a5b"
+                attempt_id: "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d"
+                status: "PENDING"
+                provider_name: "PSP_A"
+                message: "Payment outcome pending reconciliation"
+                timestamp: "2026-05-27T12:00:00Z"
+
+        '400':
+          description: |
+            Schema or header validation failure. Includes: missing or malformed
+            `X-Request-Id`, missing required body fields, invalid enum values,
+            malformed UUIDs, non-positive amounts, or invalid currency codes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missing_request_id:
+                  summary: X-Request-Id header absent
+                  value:
+                    error_code: "MISSING_REQUEST_ID"
+                    message: "X-Request-Id header is required"
+                    details:
+                      - field: "X-Request-Id"
+                        issue: "header must not be absent"
+                    request_id: "sys_a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+                    timestamp: "2026-05-27T12:00:00Z"
+                malformed_request_id:
+                  summary: X-Request-Id is not a valid UUID
+                  value:
+                    error_code: "VALIDATION_ERROR"
+                    message: "Validation failed"
+                    details:
+                      - field: "X-Request-Id"
+                        issue: "must be a valid UUID v4"
+                    request_id: "sys_b2c3d4e5-f6a7-8901-bcde-f12345678901"
+                    timestamp: "2026-05-27T12:00:00Z"
+                missing_field:
+                  summary: Required body field missing
+                  value:
+                    error_code: "VALIDATION_ERROR"
+                    message: "Validation failed"
+                    details:
+                      - field: "merchant_id"
+                        issue: "must not be null"
+                      - field: "transaction_amount.amount"
+                        issue: "must be greater than 0"
+                    request_id: "req_abc123"
+                    timestamp: "2026-05-27T12:00:00Z"
+                invalid_currency:
+                  summary: Unsupported currency code format
+                  value:
+                    error_code: "VALIDATION_ERROR"
+                    message: "Validation failed"
+                    details:
+                      - field: "transaction_amount.currency_code"
+                        issue: "must be a valid ISO 4217 3-letter currency code"
+                    request_id: "req_abc124"
+                    timestamp: "2026-05-27T12:00:00Z"
+
+        '401':
+          description: |
+            Authentication failure. HMAC signature does not match any active
+            or grace-period key, nonce was already used within the replay
+            protection window, or timestamp is outside the ±5 minute drift window.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                invalid_signature:
+                  summary: HMAC signature mismatch against all active keys
+                  value:
+                    error_code: "INVALID_SIGNATURE"
+                    message: "Request signature verification failed"
+                    details: []
+                    request_id: "req_abc126"
+                    timestamp: "2026-05-27T12:00:00Z"
+                nonce_reuse:
+                  summary: Nonce already used within replay window
+                  value:
+                    error_code: "NONCE_REUSED"
+                    message: "Nonce has already been used within the replay protection window"
+                    details: []
+                    request_id: "req_abc127"
+                    timestamp: "2026-05-27T12:00:00Z"
+                timestamp_expired:
+                  summary: Timestamp outside allowed drift window
+                  value:
+                    error_code: "TIMESTAMP_INVALID"
+                    message: "Request timestamp is outside the allowed 5-minute drift window"
+                    details: []
+                    request_id: "req_abc128"
+                    timestamp: "2026-05-27T12:00:00Z"
+
+        '409':
+          description: |
+            Idempotency key conflict. The same `Idempotency-Key` was submitted
+            with a different request payload than the original request.
+            To retry the same payment, reuse the original payload exactly.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error_code: "IDEMPOTENCY_CONFLICT"
+                message: "Idempotency key already used with a different request payload"
+                details: []
+                request_id: "req_abc129"
+                timestamp: "2026-05-27T12:00:00Z"
+
+        '422':
+          description: |
+            Business rule violation. Request is structurally valid but cannot
+            be processed due to domain constraints.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                merchant_inactive:
+                  summary: Merchant account is not active
+                  value:
+                    error_code: "MERCHANT_INACTIVE"
+                    message: "Merchant account is not active or does not exist"
+                    details: []
+                    request_id: "req_abc130"
+                    timestamp: "2026-05-27T12:00:00Z"
+                duplicate_order:
+                  summary: Duplicate merchant_order_id
+                  value:
+                    error_code: "DUPLICATE_ORDER_ID"
+                    message: "A payment with merchant_order_id 'ORDER-20260527-001' already exists"
+                    details:
+                      - field: "merchant_order_id"
+                        issue: "must be unique per merchant"
+                    request_id: "req_abc131"
+                    timestamp: "2026-05-27T12:00:00Z"
+                unsupported_currency:
+                  summary: Currency pair not supported
+                  value:
+                    error_code: "UNSUPPORTED_CURRENCY"
+                    message: "The currency pair USD/INR is not supported for this merchant"
+                    details: []
+                    request_id: "req_abc132"
+                    timestamp: "2026-05-27T12:00:00Z"
+                unsupported_payment_method:
+                  summary: Payment method not enabled for merchant
+                  value:
+                    error_code: "UNSUPPORTED_PAYMENT_METHOD"
+                    message: "Payment method CARD is not enabled for this merchant"
+                    details: []
+                    request_id: "req_abc133"
+                    timestamp: "2026-05-27T12:00:00Z"
+                invalid_amount:
+                  summary: Amount below minimum threshold
+                  value:
+                    error_code: "INVALID_AMOUNT"
+                    message: "Transaction amount 0.001 USD is below the minimum allowed amount"
+                    details: []
+                    request_id: "req_abc134"
+                    timestamp: "2026-05-27T12:00:00Z"
+                settlement_incompatible:
+                  summary: No PSP supports requested currency pair
+                  value:
+                    error_code: "SETTLEMENT_INCOMPATIBLE"
+                    message: "No available PSP supports the requested transaction/settlement currency pair"
+                    details: []
+                    request_id: "req_abc135"
+                    timestamp: "2026-05-27T12:00:00Z"
+
+        '500':
+          description: |
+            Internal system failure. If this error is returned before the DB
+            transaction committed, no payment was initiated and the idempotency
+            key is safe to reuse. If a `202 PENDING` was previously returned,
+            do not re-attempt — query payment status instead.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error_code: "INTERNAL_ERROR"
+                message: "An unexpected error occurred. Please retry or contact support."
+                details: []
+                request_id: "req_abc136"
+                timestamp: "2026-05-27T12:00:00Z"
+
+  /api/v1/payments-orchestration/payments/{intent_id}:
+    get:
+      tags: [Payments]
+      summary: Fetch Payment
+      description: |
+        Retrieves the full payment intent record including the latest attempt
+        details and the canonical lifecycle state.
+
+        The `payment_intents` table is the source of truth. This endpoint
+        reflects the current resolved state, including any async reconciliation
+        updates that may have occurred since the original authorization attempt.
+      operationId: fetchPayment
+      parameters:
+        - $ref: '#/components/parameters/IntentId'
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/XCorrelationId'
+      responses:
+        '200':
+          description: Payment intent found and returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentDetailResponse'
+              example:
+                intent_id: "7f3e2c1a-4b5d-6e7f-8a9b-0c1d2e3f4a5b"
+                merchant_id: "550e8400-e29b-41d4-a716-446655440000"
+                merchant_order_id: "ORDER-20260527-001"
+                status: "AUTHORIZED"
+                transaction_amount:
+                  currency_code: "USD"
+                  amount: 100.00
+                settlement_amount:
+                  currency_code: "INR"
+                  amount: 8300.00
+                final_attempt:
+                  attempt_id: "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d"
+                  provider_name: "PSP_A"
+                  provider_reference: "provider_tx_9f8e7d6c"
+                  payment_method_type: "CARD"
+                  status: "AUTHORIZED"
+                  retry_count: 0
+                  error_code: null
+                  error_message: null
+                  created_at: "2026-05-27T12:00:00Z"
+                  updated_at: "2026-05-27T12:00:02Z"
+                created_at: "2026-05-27T12:00:00Z"
+                updated_at: "2026-05-27T12:00:02Z"
+
+        '400':
+          description: Malformed or invalid `intent_id` path parameter, or missing `X-Request-Id`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error_code: "VALIDATION_ERROR"
+                message: "Validation failed"
+                details:
+                  - field: "intent_id"
+                    issue: "must be a valid UUID"
+                request_id: "req_xyz001"
+                timestamp: "2026-05-27T12:00:00Z"
+
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/payments-orchestration/payments/{intent_id}/status:
+    get:
+      tags: [Payments]
+      summary: Fetch Payment Status
+      description: |
+        Lightweight status-only check for a payment intent. Useful for polling
+        `PENDING` payments while awaiting async reconciliation resolution.
+
+        Returns only the lifecycle state and identifiers, not the full payment detail.
+        For the complete record including attempt details, use `GET /payments/{intent_id}`.
+      operationId: fetchPaymentStatus
+      parameters:
+        - $ref: '#/components/parameters/IntentId'
+        - $ref: '#/components/parameters/XRequestId'
+        - $ref: '#/components/parameters/XCorrelationId'
+      responses:
+        '200':
+          description: Payment status returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentStatusResponse'
+              examples:
+                authorized:
+                  summary: Resolved to AUTHORIZED
+                  value:
+                    intent_id: "7f3e2c1a-4b5d-6e7f-8a9b-0c1d2e3f4a5b"
+                    merchant_order_id: "ORDER-20260527-001"
+                    status: "AUTHORIZED"
+                    updated_at: "2026-05-27T12:00:02Z"
+                pending:
+                  summary: Still pending reconciliation
+                  value:
+                    intent_id: "7f3e2c1a-4b5d-6e7f-8a9b-0c1d2e3f4a5b"
+                    merchant_order_id: "ORDER-20260527-001"
+                    status: "PENDING"
+                    updated_at: "2026-05-27T12:00:00Z"
+                failed:
+                  summary: Definitively failed
+                  value:
+                    intent_id: "7f3e2c1a-4b5d-6e7f-8a9b-0c1d2e3f4a5b"
+                    merchant_order_id: "ORDER-20260527-001"
+                    status: "FAILED"
+                    updated_at: "2026-05-27T12:00:05Z"
+
+        '400':
+          $ref: '#/components/responses/BadRequestIntentId'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /api/v1/payments-orchestration/webhooks/{provider}:
+    post:
+      tags: [Webhooks]
+      summary: Receive PSP Webhook
+      description: |
+        Ingests asynchronous callbacks from PSP providers. Used to:
+        - Resolve `PENDING` payments to final states (`AUTHORIZED` or `FAILED`).
+        - Confirm authorizations not returned in the synchronous flow.
+        - Accelerate reconciliation.
+
+        **Security:** Each provider webhook is verified using the provider-specific
+        signature scheme. Unverified webhooks are rejected with `401`.
+
+        **Deduplication:** Webhook events are deduplicated by `event_id`.
+        Replayed events are acknowledged with `200` but not reprocessed.
+
+        **Idempotency:** Processing is replay-safe. Multiple deliveries of the
+        same event produce the same outcome.
+      operationId: receiveWebhook
+      parameters:
+        - name: provider
+          in: path
+          required: true
+          description: PSP provider identifier.
+          schema:
+            type: string
+            enum: [PSP_A, PSP_B]
+            example: "PSP_A"
+        - name: X-PSP-Signature
+          in: header
+          required: true
+          description: |
+            Provider-specific webhook signature for payload verification.
+            Format varies by provider (HMAC-SHA256, RSA, etc.).
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WebhookRequest'
+            examples:
+              authorized:
+                summary: PSP confirms authorization
+                value:
+                  event_id: "evt_psp_abc123"
+                  event_type: "PAYMENT_AUTHORIZED"
+                  provider_reference: "provider_tx_9f8e7d6c"
+                  intent_id: "7f3e2c1a-4b5d-6e7f-8a9b-0c1d2e3f4a5b"
+                  attempt_id: "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d"
+                  status: "AUTHORIZED"
+                  timestamp: "2026-05-27T12:00:05Z"
+                  metadata:
+                    authorization_code: "AUTH789012"
+                    network: "VISA"
+              failed:
+                summary: PSP confirms definitive failure
+                value:
+                  event_id: "evt_psp_abc124"
+                  event_type: "PAYMENT_FAILED"
+                  provider_reference: "provider_tx_9f8e7d6d"
+                  intent_id: "7f3e2c1a-4b5d-6e7f-8a9b-0c1d2e3f0000"
+                  attempt_id: "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b0000"
+                  status: "FAILED"
+                  timestamp: "2026-05-27T12:01:00Z"
+                  metadata:
+                    decline_code: "INSUFFICIENT_FUNDS"
+                    network: "MASTERCARD"
+      responses:
+        '200':
+          description: Webhook acknowledged and processed (or already processed — idempotent).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  acknowledged:
+                    type: boolean
+                    example: true
+                  event_id:
+                    type: string
+                    example: "evt_psp_abc123"
+
+        '400':
+          description: Malformed webhook payload — missing required fields or invalid structure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error_code: "VALIDATION_ERROR"
+                message: "Webhook payload is missing required field 'event_id'"
+                details:
+                  - field: "event_id"
+                    issue: "must not be null"
+                request_id: "req_wh001"
+                timestamp: "2026-05-27T12:00:00Z"
+
+        '401':
+          description: |
+            PSP webhook signature verification failed. Payload may have been
+            tampered with, or the signature secret is misconfigured.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error_code: "INVALID_WEBHOOK_SIGNATURE"
+                message: "Webhook signature verification failed for provider PSP_A"
+                details: []
+                request_id: "req_wh002"
+                timestamp: "2026-05-27T12:00:00Z"
+
+        '404':
+          description: No matching payment intent or attempt found for the webhook's references.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error_code: "PAYMENT_NOT_FOUND"
+                message: "No payment attempt found for provider_reference 'provider_tx_unknown'"
+                details: []
+                request_id: "req_wh003"
+                timestamp: "2026-05-27T12:00:00Z"
+
+        '422':
+          description: |
+            Webhook event is structurally valid but cannot be applied.
+            Examples: illegal state transition, or event references a superseded attempt.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                illegal_transition:
+                  summary: Illegal state transition
+                  value:
+                    error_code: "ILLEGAL_STATE_TRANSITION"
+                    message: "Cannot transition payment from FAILED to AUTHORIZED"
+                    details:
+                      - field: "status"
+                        issue: "FAILED is a terminal state"
+                    request_id: "req_wh004"
+                    timestamp: "2026-05-27T12:00:00Z"
+                superseded_attempt:
+                  summary: Attempt already superseded
+                  value:
+                    error_code: "ATTEMPT_SUPERSEDED"
+                    message: "The referenced attempt has been superseded by a successful retry"
+                    details: []
+                    request_id: "req_wh005"
+                    timestamp: "2026-05-27T12:00:00Z"
+
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+# ─────────────────────────────────────────────
+# COMPONENTS
+# ─────────────────────────────────────────────
+components:
+
+  parameters:
+
+    XRequestId:
+      name: X-Request-Id
+      in: header
+      required: true
+      description: |
+        Unique ID for this HTTP request. **Must be a valid UUID v4.**
+        Absence or malformed value results in `400 Bad Request`.
+        When absent, the `request_id` in the error response is a system-generated
+        trace ID prefixed with `sys_` to distinguish it from client-provided IDs.
+        Echoed in all successful and error responses as `request_id`.
+      schema:
+        type: string
+        format: uuid
+        example: "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+
+    XCorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      description: |
+        Distributed trace correlation ID propagated across all service boundaries
+        and downstream PSP calls. If not provided, the system generates a UUID v4
+        and returns it in the response `X-Correlation-Id` header.
+      schema:
+        type: string
+        example: "corr_7f3e2c1a4b5d"
+
+    XTimestamp:
+      name: X-Timestamp
+      in: header
+      required: true
+      description: |
+        ISO 8601 UTC timestamp of request creation. Must be within ±5 minutes
+        of server time. Used in replay protection and HMAC canonical string construction.
+        Requests outside this window are rejected with `401 TIMESTAMP_INVALID`.
+      schema:
+        type: string
+        format: date-time
+        example: "2026-05-27T12:00:00Z"
+
+    XNonce:
+      name: X-Nonce
+      in: header
+      required: true
+      description: |
+        Cryptographically random string, unique per merchant per 10-minute replay
+        protection window. Minimum 16 characters. Included in HMAC canonical string.
+        Backed by a persisted, replicated Redis cache. All reuse attempts are
+        written to a nonce replay audit log regardless of outcome.
+      schema:
+        type: string
+        minLength: 16
+        example: "a8f3c2e91d047b65"
+
+    XSignature:
+      name: X-Signature
+      in: header
+      required: true
+      description: |
+        `Base64(HMAC_SHA256(merchant_secret, canonical_string))` where:
+        `canonical_string = HTTP_METHOD + REQUEST_PATH + BODY_SHA256 + TIMESTAMP + NONCE + MERCHANT_ID`
+
+        Validated against the merchant's active key first, then against the
+        previous grace-period key if active key validation fails (supports
+        zero-downtime key rotation). Signing always uses the newest key only.
+        Secrets are stored in KMS/secrets manager, never in application config.
+      schema:
+        type: string
+        example: "K7gNU3sdo+OL0wNhqoVWhr3g6s1xYv72ol/pe/Unols="
+
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        Client-generated unique key for duplicate request prevention.
+        - Same key + same payload: original response returned, no re-processing.
+        - Same key + different payload: `409 Conflict`.
+        - Keys expire after 24 hours.
+        Recommended format: UUID v4.
+      schema:
+        type: string
+        format: uuid
+        example: "b3f1e2d4-c5a6-7890-bcde-f01234567890"
+
+    IntentId:
+      name: intent_id
+      in: path
+      required: true
+      description: UUID of the payment intent to retrieve.
+      schema:
+        type: string
+        format: uuid
+        example: "7f3e2c1a-4b5d-6e7f-8a9b-0c1d2e3f4a5b"
+
+  schemas:
+
+    MoneyAmount:
+      type: object
+      required: [currency_code, amount]
+      properties:
+        currency_code:
+          type: string
+          description: ISO 4217 3-letter currency code.
+          minLength: 3
+          maxLength: 3
+          pattern: '^[A-Z]{3}$'
+          example: "USD"
+        amount:
+          type: number
+          format: decimal
+          description: Positive monetary value. Precision to 2 decimal places. Must be greater than 0.
+          exclusiveMinimum: 0
+          example: 100.00
+
+    CreatePaymentRequest:
+      type: object
+      required:
+        - merchant_id
+        - merchant_order_id
+        - payment_method_type
+        - payment_token_reference
+        - transaction_amount
+        - settlement_amount
+      properties:
+        merchant_id:
+          type: string
+          format: uuid
+          description: UUID of the merchant initiating the payment.
+          example: "550e8400-e29b-41d4-a716-446655440000"
+        merchant_order_id:
+          type: string
+          description: |
+            Merchant's own unique order identifier. Must be unique per merchant.
+            Used for business-level deduplication, separate from the idempotency key.
+          maxLength: 255
+          example: "ORDER-20260527-001"
+        payment_method_type:
+          type: string
+          description: |
+            Payment method category. Determines PSP routing:
+            CARD routes to PSP_A. UPI routes to PSP_B.
+          enum: [CARD, UPI]
+          example: "CARD"
+        payment_token_reference:
+          type: string
+          description: |
+            Reference to a tokenized payment instrument in an external vault
+            (PSP vault, tokenization service, or PCI-scoped system).
+            Raw credentials are never accepted or persisted by this orchestrator.
+          maxLength: 512
+          example: "vault_token_abc123"
+        transaction_amount:
+          $ref: '#/components/schemas/MoneyAmount'
+        settlement_amount:
+          $ref: '#/components/schemas/MoneyAmount'
+        metadata:
+          type: object
+          description: Optional arbitrary key-value metadata. Persisted and returned as-is. Not used in routing or business logic.
+          additionalProperties:
+            type: string
+          example:
+            source: "checkout"
+            device_type: "mobile"
+
+    PaymentAuthorizedResponse:
+      type: object
+      required:
+        - intent_id
+        - attempt_id
+        - merchant_order_id
+        - provider_name
+        - provider_reference
+        - status
+        - transaction_amount
+        - settlement_amount
+        - timestamp
+      properties:
+        intent_id:
+          type: string
+          format: uuid
+          example: "7f3e2c1a-4b5d-6e7f-8a9b-0c1d2e3f4a5b"
+        attempt_id:
+          type: string
+          format: uuid
+          example: "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d"
+        merchant_order_id:
+          type: string
+          example: "ORDER-20260527-001"
+        provider_name:
+          type: string
+          enum: [PSP_A, PSP_B]
+          example: "PSP_A"
+        provider_reference:
+          type: string
+          description: PSP's own transaction reference. Used for reconciliation queries.
+          example: "provider_tx_9f8e7d6c"
+        status:
+          type: string
+          enum: [AUTHORIZED]
+          example: "AUTHORIZED"
+        transaction_amount:
+          $ref: '#/components/schemas/MoneyAmount'
+        settlement_amount:
+          $ref: '#/components/schemas/MoneyAmount'
+        timestamp:
+          type: string
+          format: date-time
+          example: "2026-05-27T12:00:00Z"
+
+    PaymentPendingResponse:
+      type: object
+      required:
+        - intent_id
+        - attempt_id
+        - status
+        - provider_name
+        - message
+        - timestamp
+      properties:
+        intent_id:
+          type: string
+          format: uuid
+          example: "7f3e2c1a-4b5d-6e7f-8a9b-0c1d2e3f4a5b"
+        attempt_id:
+          type: string
+          format: uuid
+          example: "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d"
+        status:
+          type: string
+          enum: [PENDING]
+          example: "PENDING"
+        provider_name:
+          type: string
+          enum: [PSP_A, PSP_B]
+          example: "PSP_A"
+        message:
+          type: string
+          example: "Payment outcome pending reconciliation"
+        timestamp:
+          type: string
+          format: date-time
+          example: "2026-05-27T12:00:00Z"
+
+    PaymentAttemptSummary:
+      type: object
+      properties:
+        attempt_id:
+          type: string
+          format: uuid
+        provider_name:
+          type: string
+          enum: [PSP_A, PSP_B]
+        provider_reference:
+          type: string
+          nullable: true
+          description: Null if PSP never responded (e.g. timeout before any response).
+        payment_method_type:
+          type: string
+          enum: [CARD, UPI]
+        status:
+          type: string
+          enum: [PROCESSING, AUTHORIZED, FAILED, PENDING, SUPERSEDED]
+        retry_count:
+          type: integer
+          minimum: 0
+          example: 0
+        error_code:
+          type: string
+          nullable: true
+          example: null
+        error_message:
+          type: string
+          nullable: true
+          example: null
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    PaymentDetailResponse:
+      type: object
+      required:
+        - intent_id
+        - merchant_id
+        - merchant_order_id
+        - status
+        - transaction_amount
+        - settlement_amount
+        - created_at
+        - updated_at
+      properties:
+        intent_id:
+          type: string
+          format: uuid
+        merchant_id:
+          type: string
+          format: uuid
+        merchant_order_id:
+          type: string
+        status:
+          type: string
+          enum: [CREATED, PROCESSING, AUTHORIZED, FAILED, PENDING, SUPERSEDED]
+          description: Canonical lifecycle state from the payment_intents table.
+        transaction_amount:
+          $ref: '#/components/schemas/MoneyAmount'
+        settlement_amount:
+          $ref: '#/components/schemas/MoneyAmount'
+        final_attempt:
+          allOf:
+            - $ref: '#/components/schemas/PaymentAttemptSummary'
+          nullable: true
+          description: |
+            The most recent (or final resolved) attempt. Null if no attempt
+            has been made yet (payment still in CREATED state).
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    PaymentStatusResponse:
+      type: object
+      required:
+        - intent_id
+        - merchant_order_id
+        - status
+        - updated_at
+      properties:
+        intent_id:
+          type: string
+          format: uuid
+        merchant_order_id:
+          type: string
+        status:
+          type: string
+          enum: [CREATED, PROCESSING, AUTHORIZED, FAILED, PENDING, SUPERSEDED]
+        updated_at:
+          type: string
+          format: date-time
+
+    WebhookRequest:
+      type: object
+      required:
+        - event_id
+        - event_type
+        - provider_reference
+        - status
+        - timestamp
+      properties:
+        event_id:
+          type: string
+          description: PSP-generated unique event ID. Used for deduplication.
+          example: "evt_psp_abc123"
+        event_type:
+          type: string
+          enum: [PAYMENT_AUTHORIZED, PAYMENT_FAILED, PAYMENT_PENDING]
+          example: "PAYMENT_AUTHORIZED"
+        provider_reference:
+          type: string
+          description: PSP transaction reference. Must match a known payment_attempts.provider_reference.
+          example: "provider_tx_9f8e7d6c"
+        intent_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: |
+            Optional. If provided, used to correlate directly to a payment intent.
+            If absent, correlation is done via provider_reference.
+          example: "7f3e2c1a-4b5d-6e7f-8a9b-0c1d2e3f4a5b"
+        attempt_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Optional. If provided, correlates directly to a specific attempt.
+          example: "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d"
+        status:
+          type: string
+          enum: [AUTHORIZED, FAILED, PENDING]
+          example: "AUTHORIZED"
+        timestamp:
+          type: string
+          format: date-time
+          description: UTC timestamp when the event occurred at the PSP.
+          example: "2026-05-27T12:00:05Z"
+        metadata:
+          type: object
+          description: Provider-specific event metadata (authorization codes, decline codes, etc.).
+          additionalProperties: true
+          example:
+            authorization_code: "AUTH789012"
+            network: "VISA"
+
+    ValidationDetail:
+      type: object
+      properties:
+        field:
+          type: string
+          description: JSON path or header name of the offending field.
+          example: "transaction_amount.currency_code"
+        issue:
+          type: string
+          description: Human-readable description of the constraint violation.
+          example: "must be a valid ISO 4217 3-letter currency code"
+
+    ErrorResponse:
+      type: object
+      required:
+        - error_code
+        - message
+        - details
+        - request_id
+        - timestamp
+      properties:
+        error_code:
+          type: string
+          description: Machine-readable error code for programmatic handling.
+          enum:
+            - VALIDATION_ERROR
+            - MISSING_REQUEST_ID
+            - INVALID_SIGNATURE
+            - NONCE_REUSED
+            - TIMESTAMP_INVALID
+            - IDEMPOTENCY_CONFLICT
+            - MERCHANT_INACTIVE
+            - DUPLICATE_ORDER_ID
+            - UNSUPPORTED_CURRENCY
+            - UNSUPPORTED_PAYMENT_METHOD
+            - INVALID_AMOUNT
+            - SETTLEMENT_INCOMPATIBLE
+            - PAYMENT_NOT_FOUND
+            - ILLEGAL_STATE_TRANSITION
+            - ATTEMPT_SUPERSEDED
+            - INVALID_WEBHOOK_SIGNATURE
+            - INTERNAL_ERROR
+          example: "VALIDATION_ERROR"
+        message:
+          type: string
+          description: Human-readable error description suitable for logging.
+          example: "Validation failed"
+        details:
+          type: array
+          description: Field-level validation details. Empty array for non-validation errors.
+          items:
+            $ref: '#/components/schemas/ValidationDetail'
+        request_id:
+          type: string
+          description: |
+            Echo of the X-Request-Id header. If X-Request-Id was absent or malformed,
+            this contains a system-generated trace ID prefixed with sys_ to distinguish
+            it from client-provided IDs. Always present.
+          example: "req_abc123"
+        timestamp:
+          type: string
+          format: date-time
+          example: "2026-05-27T12:00:00Z"
+
+  responses:
+
+    Unauthorized:
+      description: Authentication or signature verification failure.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error_code: "INVALID_SIGNATURE"
+            message: "Request signature verification failed"
+            details: []
+            request_id: "req_000"
+            timestamp: "2026-05-27T12:00:00Z"
+
+    NotFound:
+      description: Payment intent not found.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error_code: "PAYMENT_NOT_FOUND"
+            message: "No payment found for the given identifier"
+            details: []
+            request_id: "req_000"
+            timestamp: "2026-05-27T12:00:00Z"
+
+    BadRequestIntentId:
+      description: Malformed intent_id path parameter or missing X-Request-Id.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error_code: "VALIDATION_ERROR"
+            message: "Validation failed"
+            details:
+              - field: "intent_id"
+                issue: "must be a valid UUID"
+            request_id: "req_000"
+            timestamp: "2026-05-27T12:00:00Z"
+
+    InternalError:
+      description: Unexpected internal system failure.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+          example:
+            error_code: "INTERNAL_ERROR"
+            message: "An unexpected error occurred. Please retry or contact support."
+            details: []
+            request_id: "req_000"
+            timestamp: "2026-05-27T12:00:00Z"

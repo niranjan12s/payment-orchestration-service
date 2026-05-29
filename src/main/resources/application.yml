@@ -1,0 +1,90 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: payment-orchestrator
+  profiles:
+    active: local
+  datasource:
+    driver-class-name: org.postgresql.Driver
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        format_sql: true
+        show_sql: false
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+  data:
+    redis:
+      repositories:
+        enabled: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, prometheus
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        registerHealthIndicator: true
+        slidingWindowSize: 10
+        minimumNumberOfCalls: 5
+        permittedNumberOfCallsInHalfOpenState: 3
+        automaticTransitionFromOpenToHalfOpenEnabled: true
+        waitDurationInOpenState: 10s
+        failureRateThreshold: 50
+        slowCallRateThreshold: 50
+        slowCallDurationThreshold: 2000
+    instances:
+      psp-a:
+        baseConfig: default
+      psp-b:
+        baseConfig: default
+
+orchestrator:
+  idempotency:
+    ttl-hours: 24
+  replay-protection:
+    timestamp-window-minutes: 5
+    nonce-window-minutes: 10
+  workers:
+    outbox-publisher:
+      interval-ms: 1500
+    reconciliation:
+      interval-ms: 45000
+    retry:
+      base-backoff-ms: 1000
+      max-backoff-ms: 300000
+      max-attempts: 5
+  routing:
+    CARD: PSP_A
+    UPI: PSP_B
+  security:
+    key-rotation:
+      grace-period-minutes: 60
+  psp:
+    psp-a:
+      # Simulator mode: SUCCESS | FAILURE | TIMEOUT
+      mode: SUCCESS
+      webhook-secret: secret_psp_a
+    psp-b:
+      # Simulator mode: SUCCESS | FAILURE | TIMEOUT
+      mode: SUCCESS
+      webhook-secret: secret_psp_b
