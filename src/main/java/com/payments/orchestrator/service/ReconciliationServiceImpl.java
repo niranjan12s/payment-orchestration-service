@@ -66,10 +66,11 @@ public class ReconciliationServiceImpl implements ReconciliationService {
         log.info("Processing reconciliation checks for PaymentIntent: {}. Status: {}, Age: {} hours.",
                 intentId, intent.getStatus(), age.toHours());
 
-        // 1. Escalation Policy >= 48 Hours: Transition to MANUAL_REVIEW
+        // 1. Escalation Policy >= 48 Hours: Emit Operational Alert
         if (age.toHours() >= 48) {
-            escalateToManualReview(intentId, age.toHours());
-            return;
+            log.error("[RECONCILIATION CRITICAL] PaymentIntent {} remains pending unresolved for {} hours. Immediate manual investigation required.",
+                    intentId, age.toHours());
+            meterRegistry.counter("payment.reconciliation.escalations", "level", "critical_48h").increment();
         }
 
         // 2. Escalation Policy >= 24 Hours: Emit Operational Alert
@@ -79,14 +80,16 @@ public class ReconciliationServiceImpl implements ReconciliationService {
             meterRegistry.counter("payment.reconciliation.escalations", "level", "alert_24h").increment();
         }
 
-        // 3. Extract the active payment attempt (PROCESSING or PENDING)
-        PaymentAttempt activeAttempt = intent.getAttempts().stream()
-                .filter(a -> a.getStatus() == AttemptStatus.PROCESSING || a.getStatus() == AttemptStatus.PENDING)
-                .findFirst()
-                .orElse(null);
-
+        // 3. Extract the active payment attempt by ID
+        UUID activeAttemptId = intent.getActiveAttemptId();
+        PaymentAttempt activeAttempt = null;
+        if (activeAttemptId != null) {
+            activeAttempt = intent.getAttempts().stream()
+                    .filter(a -> a.getAttemptId().equals(activeAttemptId))
+                    .findFirst()
+                    .orElse(null);
+        }
         if (activeAttempt == null) {
-            // Fallback to latest attempt if none are currently in in-flight states
             activeAttempt = intent.getAttempts().stream()
                     .max(Comparator.comparing(PaymentAttempt::getCreatedAt))
                     .orElse(null);
@@ -132,62 +135,7 @@ public class ReconciliationServiceImpl implements ReconciliationService {
         }
     }
 
-    /**
-     * Atomically transitions the PaymentIntent to MANUAL_REVIEW.
-     */
-    @Transactional
-    public void escalateToManualReview(UUID intentId, long ageHours) {
-        PaymentIntent intent = intentRepository.findById(intentId)
-                .orElseThrow(() -> new IllegalArgumentException("PaymentIntent not found: " + intentId));
 
-        // Skip if status is already terminal
-        if (intent.getStatus() == PaymentStatus.AUTHORIZED || intent.getStatus() == PaymentStatus.FAILED) {
-            return;
-        }
-
-        log.warn("[RECONCILIATION ESCALATION] Moving PaymentIntent {} to MANUAL_REVIEW after {} hours.", intentId, ageHours);
-
-        // Transition Intent state
-        lifecycleValidator.checkAndValidateIntentTransition(intent.getStatus(), PaymentStatus.MANUAL_REVIEW);
-        intent.setStatus(PaymentStatus.MANUAL_REVIEW);
-
-        // Write audit event
-        PaymentEvent event = new PaymentEvent();
-        event.setEventId(UUID.randomUUID());
-        event.setIntentId(intentId);
-        event.setCorrelationId(intent.getCorrelationId());
-        event.setEventType("RECONCILIATION_RESOLVED");
-        
-        Map<String, Object> payload = new HashMap<>();
-        payload.put("status", "MANUAL_REVIEW");
-        payload.put("merchant_id", intent.getMerchantId().toString());
-        payload.put("merchant_order_id", intent.getMerchantOrderId());
-        payload.put("escalation", "48h_manual_review_reached");
-        event.setEventPayload(payload);
-
-        // Write outbox event
-        PaymentOutbox outbox = new PaymentOutbox();
-        outbox.setOutboxId(UUID.randomUUID());
-        outbox.setAggregateId(intentId);
-        outbox.setAggregateType("PaymentIntent");
-        outbox.setCorrelationId(intent.getCorrelationId());
-        outbox.setEventType("RECONCILIATION_RESOLVED");
-        
-        Map<String, Object> outboxPayload = new HashMap<>();
-        outboxPayload.put("intent_id", intentId.toString());
-        outboxPayload.put("merchant_id", intent.getMerchantId().toString());
-        outboxPayload.put("merchant_order_id", intent.getMerchantOrderId());
-        outboxPayload.put("status", "MANUAL_REVIEW");
-        outbox.setPayload(outboxPayload);
-        outbox.setStatus(OutboxStatus.PENDING);
-        outbox.setRetryCount(0);
-
-        intentRepository.save(intent);
-        eventRepository.save(event);
-        outboxRepository.save(outbox);
-
-        meterRegistry.counter("payment.reconciliation.escalations", "level", "manual_review").increment();
-    }
 
     /**
      * Atomically resolves the final state of the intent and attempt from the PSP query response.
@@ -225,7 +173,7 @@ public class ReconciliationServiceImpl implements ReconciliationService {
         // Sequential Intent Transitions
         lifecycleValidator.checkAndValidateIntentTransition(intent.getStatus(), targetIntentStatus);
         intent.setStatus(targetIntentStatus);
-        intent.setFinalAttemptId(attemptId);
+        intent.setActiveAttemptId(attemptId);
 
         // Persist outcome event (RECONCILIATION_RESOLVED)
         PaymentEvent event = new PaymentEvent();
@@ -270,6 +218,7 @@ public class ReconciliationServiceImpl implements ReconciliationService {
         outbox.setPayload(outboxPayload);
         outbox.setStatus(OutboxStatus.PENDING);
         outbox.setRetryCount(0);
+        outbox.setSourceEventId(event.getEventId());
 
         intentRepository.save(intent);
         attemptRepository.save(attempt);

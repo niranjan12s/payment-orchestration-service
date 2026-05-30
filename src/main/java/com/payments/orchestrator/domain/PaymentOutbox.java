@@ -46,6 +46,9 @@ public class PaymentOutbox {
     @Column(name = "processed_at")
     private OffsetDateTime processedAt;
 
+    @Column(name = "source_event_id")
+    private UUID sourceEventId;
+
     @PrePersist
     protected void onCreate() {
         OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
@@ -137,5 +140,13 @@ public class PaymentOutbox {
 
     public void setProcessedAt(OffsetDateTime processedAt) {
         this.processedAt = processedAt;
+    }
+
+    public UUID getSourceEventId() {
+        return sourceEventId;
+    }
+
+    public void setSourceEventId(UUID sourceEventId) {
+        this.sourceEventId = sourceEventId;
     }
 }

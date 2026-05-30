@@ -52,6 +52,10 @@ public class RetryServiceImpl implements RetryService {
     @Autowired
     private MeterRegistry meterRegistry;
 
+    @Autowired
+    @org.springframework.context.annotation.Lazy
+    private RetryServiceImpl self;
+
     /**
      * Executes the non-transactional external retry authorization call and delegates outcomes
      * to transactional boundaries, ensuring network calls never happen inside a database transaction.
@@ -62,7 +66,7 @@ public class RetryServiceImpl implements RetryService {
         log.info("Executing async retry operations for PaymentIntent: {}", intentId);
 
         // 1. Transaction 1: Create a new serialized PaymentAttempt in PROCESSING status
-        PaymentAttempt newAttempt = prepareRetryAttempt(intentId);
+        PaymentAttempt newAttempt = self.prepareRetryAttempt(intentId);
         
         if (newAttempt == null) {
             log.info("Retry preparation returned null (max attempts exceeded or already resolved) for intent {}.", intentId);
@@ -95,7 +99,7 @@ public class RetryServiceImpl implements RetryService {
         }
 
         // 3. Transaction 2: Resolve and apply outcomes atomically
-        resolveOutcome(intentId, attemptId, pspResponse);
+        self.resolveOutcome(intentId, attemptId, pspResponse);
     }
 
     /**
@@ -104,7 +108,7 @@ public class RetryServiceImpl implements RetryService {
      */
     @Transactional
     public PaymentAttempt prepareRetryAttempt(UUID intentId) {
-        PaymentIntent intent = intentRepository.findById(intentId)
+        PaymentIntent intent = intentRepository.findByIdWithAttempts(intentId)
                 .orElseThrow(() -> new IllegalArgumentException("PaymentIntent not found: " + intentId));
 
         // Confirm intent is still PENDING and eligible to be retried
@@ -132,7 +136,7 @@ public class RetryServiceImpl implements RetryService {
             
             lifecycleValidator.checkAndValidateIntentTransition(intent.getStatus(), PaymentStatus.FAILED);
             intent.setStatus(PaymentStatus.FAILED);
-            intentRepository.save(intent);
+            intentRepository.saveAndFlush(intent);
 
             // Write DLQ Failure event using standard HashMap to prevent NullPointerException
             PaymentEvent dlqEvent = new PaymentEvent();
@@ -166,6 +170,7 @@ public class RetryServiceImpl implements RetryService {
             dlqOutbox.setPayload(outboxPayload);
             dlqOutbox.setStatus(OutboxStatus.PENDING);
             dlqOutbox.setRetryCount(0);
+            dlqOutbox.setSourceEventId(dlqEvent.getEventId());
             outboxRepository.save(dlqOutbox);
 
             meterRegistry.counter("payment.retry.dlq.count").increment();
@@ -185,7 +190,7 @@ public class RetryServiceImpl implements RetryService {
         newAttempt.setRetryCount(activeAttempt.getRetryCount() + 1);
 
         intent.addAttempt(newAttempt);
-        intent.setFinalAttemptId(newAttemptId);
+        intent.setActiveAttemptId(newAttemptId);
 
         // Write retry execution events using standard HashMap to prevent NullPointerException
         PaymentEvent retryEvent = new PaymentEvent();
@@ -202,11 +207,16 @@ public class RetryServiceImpl implements RetryService {
         retryEvent.setEventPayload(retryPayload);
 
         // Save states
-        intentRepository.save(intent);
+        PaymentIntent savedIntent = intentRepository.saveAndFlush(intent);
+        
+        PaymentAttempt savedAttempt = savedIntent.getAttempts().stream()
+                .max(Comparator.comparingInt(PaymentAttempt::getRetryCount))
+                .orElse(newAttempt);
+        
         eventRepository.save(retryEvent);
 
-        log.info("Successfully persisted new retry attempt N+1: {} for intent {}", newAttemptId, intentId);
-        return newAttempt;
+        log.info("Successfully persisted new retry attempt N+1: {} for intent {}", savedAttempt.getAttemptId(), intentId);
+        return savedAttempt;
     }
 
     /**
@@ -214,7 +224,7 @@ public class RetryServiceImpl implements RetryService {
      */
     @Transactional
     public void resolveOutcome(UUID intentId, UUID attemptId, PspResponse pspResponse) {
-        PaymentIntent intent = intentRepository.findById(intentId)
+        PaymentIntent intent = intentRepository.findByIdWithAttempts(intentId)
                 .orElseThrow(() -> new IllegalArgumentException("PaymentIntent not found: " + intentId));
 
         PaymentAttempt attempt = attemptRepository.findById(attemptId)
@@ -238,14 +248,6 @@ public class RetryServiceImpl implements RetryService {
 
             lifecycleValidator.checkAndValidateIntentTransition(intent.getStatus(), PaymentStatus.AUTHORIZED);
             intent.setStatus(PaymentStatus.AUTHORIZED);
-
-            // Mark prior attempts as SUPERSEDED (Rule 3: "Mark old attempts SUPERSEDED on success")
-            for (PaymentAttempt prior : intent.getAttempts()) {
-                if (!prior.getAttemptId().equals(attemptId) && prior.getStatus() != AttemptStatus.SUPERSEDED) {
-                    prior.setStatus(AttemptStatus.SUPERSEDED);
-                    attemptRepository.save(prior);
-                }
-            }
 
             // Write Successful resolution events using standard HashMap to prevent NullPointerException
             PaymentEvent successEvent = new PaymentEvent();
@@ -283,6 +285,7 @@ public class RetryServiceImpl implements RetryService {
             outbox.setPayload(outboxPayload);
             outbox.setStatus(OutboxStatus.PENDING);
             outbox.setRetryCount(0);
+            outbox.setSourceEventId(successEvent.getEventId());
             outboxRepository.save(outbox);
 
             meterRegistry.counter("payment.retry.execution.success").increment();
@@ -344,6 +347,7 @@ public class RetryServiceImpl implements RetryService {
                 outbox.setPayload(outboxPayload);
                 outbox.setStatus(OutboxStatus.PENDING);
                 outbox.setRetryCount(0);
+                outbox.setSourceEventId(failEvent.getEventId());
                 outboxRepository.save(outbox);
             }
 
@@ -358,7 +362,7 @@ public class RetryServiceImpl implements RetryService {
             log.info("Retry call returned PENDING. Retaining intent PENDING state for reconciliation.");
         }
 
-        intentRepository.save(intent);
+        intentRepository.saveAndFlush(intent);
         attemptRepository.save(attempt);
     }
 

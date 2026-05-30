@@ -96,14 +96,8 @@ class PaymentLifecycleStateMachineTests {
         // PROCESSING -> PENDING
         validator.validateAttemptTransition(AttemptStatus.PROCESSING, AttemptStatus.PENDING);
 
-        // PROCESSING -> SUPERSEDED
-        validator.validateAttemptTransition(AttemptStatus.PROCESSING, AttemptStatus.SUPERSEDED);
-
         // PENDING -> AUTHORIZED
         validator.validateAttemptTransition(AttemptStatus.PENDING, AttemptStatus.AUTHORIZED);
-
-        // PENDING -> SUPERSEDED
-        validator.validateAttemptTransition(AttemptStatus.PENDING, AttemptStatus.SUPERSEDED);
     }
 
     @Test
@@ -115,10 +109,6 @@ class PaymentLifecycleStateMachineTests {
 
         // FAILED -> PROCESSING (Blocked)
         assertThatThrownBy(() -> validator.validateAttemptTransition(AttemptStatus.FAILED, AttemptStatus.PROCESSING))
-                .isInstanceOf(IllegalStateTransitionException.class);
-
-        // SUPERSEDED -> AUTHORIZED (Blocked)
-        assertThatThrownBy(() -> validator.validateAttemptTransition(AttemptStatus.SUPERSEDED, AttemptStatus.AUTHORIZED))
                 .isInstanceOf(IllegalStateTransitionException.class);
     }
 }

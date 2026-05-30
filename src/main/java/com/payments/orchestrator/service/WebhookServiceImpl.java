@@ -2,7 +2,6 @@ package com.payments.orchestrator.service;
 
 import com.payments.orchestrator.domain.*;
 import com.payments.orchestrator.dto.WebhookRequest;
-import com.payments.orchestrator.exception.AttemptSupersededException;
 import com.payments.orchestrator.exception.InvalidWebhookSignatureException;
 import com.payments.orchestrator.exception.PaymentNotFoundException;
 import com.payments.orchestrator.exception.IllegalStateTransitionException;
@@ -143,12 +142,6 @@ public class WebhookServiceImpl implements WebhookService {
             throw new PaymentNotFoundException("Provider mismatch");
         }
 
-        // 6. Enforce State Transition & Webhook Precedence Rules
-        if (attempt.getStatus() == AttemptStatus.SUPERSEDED) {
-            log.error("Webhook rejected: attempt {} is SUPERSEDED.", attemptId);
-            throw new AttemptSupersededException("Webhook received for superseded attempt: " + attemptId);
-        }
-
         PaymentStatus targetIntentStatus = mapWebhookStatusToIntentStatus(request.getStatus());
         AttemptStatus targetAttemptStatus = mapWebhookStatusToAttemptStatus(request.getStatus());
 
@@ -160,6 +153,55 @@ public class WebhookServiceImpl implements WebhookService {
 
         // Rule R-07: Webhook received for already-AUTHORIZED intent => 200 acknowledged, no state change
         if (intent.getStatus() == PaymentStatus.AUTHORIZED) {
+            if (targetAttemptStatus == AttemptStatus.AUTHORIZED && attempt.getStatus() != AttemptStatus.AUTHORIZED) {
+                log.error("[DUPLICATE_AUTHORIZATION_DETECTED] CRITICAL ALERT: Late webhook successfully authorized attempt {} for provider {}, " +
+                          "but PaymentIntent {} was already authorized by another attempt! Initiating duplicate auth logging and auto-reversal audit trail.",
+                          attemptId, provider, intentId);
+
+                // 1. Force the targeted attempt to AUTHORIZED to reflect actual funds reserved at PSP
+                lifecycleValidator.validateAttemptTransition(attempt.getStatus(), AttemptStatus.AUTHORIZED);
+                attempt.setStatus(AttemptStatus.AUTHORIZED);
+                attempt.setProviderReference(request.getProviderReference());
+                attemptRepository.save(attempt);
+
+                // 2. Persist audit trail event for duplicate detection
+                PaymentEvent dupEvent = new PaymentEvent();
+                dupEvent.setEventId(UUID.randomUUID());
+                dupEvent.setIntentId(intentId);
+                dupEvent.setAttemptId(attemptId);
+                dupEvent.setCorrelationId(intent.getCorrelationId());
+                dupEvent.setEventType("DUPLICATE_AUTHORIZATION_DETECTED");
+
+                Map<String, Object> dupPayload = new HashMap<>();
+                dupPayload.put("intent_id", intentId.toString());
+                dupPayload.put("duplicate_attempt_id", attemptId.toString());
+                if (intent.getActiveAttemptId() != null) {
+                    dupPayload.put("active_attempt_id", intent.getActiveAttemptId().toString());
+                }
+                dupPayload.put("provider", provider);
+                dupPayload.put("provider_reference", request.getProviderReference());
+                dupEvent.setEventPayload(dupPayload);
+                eventRepository.save(dupEvent);
+
+                // 3. Persist outbox event to dispatch downstream reversal/alerting job
+                PaymentOutbox outbox = new PaymentOutbox();
+                outbox.setOutboxId(UUID.randomUUID());
+                outbox.setAggregateId(intentId);
+                outbox.setAggregateType("PaymentIntent");
+                outbox.setCorrelationId(intent.getCorrelationId());
+                outbox.setEventType("DUPLICATE_AUTHORIZATION_DETECTED");
+
+                outbox.setPayload(dupPayload);
+                outbox.setStatus(OutboxStatus.PENDING);
+                outbox.setRetryCount(0);
+                outbox.setSourceEventId(dupEvent.getEventId());
+                outboxRepository.save(outbox);
+
+                saveProcessedWebhook(provider, request.getEventId());
+                meterRegistry.counter("payment.webhook.duplicate_auth").increment();
+                return;
+            }
+
             log.info("[WEBHOOK IDEMPOTENT] Webhook received for already-AUTHORIZED intent {}. Ignoring state changes.", intentId);
             saveProcessedWebhook(provider, request.getEventId());
             return;
@@ -186,17 +228,9 @@ public class WebhookServiceImpl implements WebhookService {
 
         boolean isIntentTransitionContradictory = lifecycleValidator.checkAndValidateIntentTransition(intent.getStatus(), targetIntentStatus);
         if (!isIntentTransitionContradictory) {
-            intent.setStatus(targetIntentStatus);
-            intent.setFinalAttemptId(attemptId);
-        }
-
-        // Handle superseding other attempts on authorization success
-        if (targetAttemptStatus == AttemptStatus.AUTHORIZED) {
-            for (PaymentAttempt prior : intent.getAttempts()) {
-                if (!prior.getAttemptId().equals(attemptId) && prior.getStatus() != AttemptStatus.SUPERSEDED) {
-                    prior.setStatus(AttemptStatus.SUPERSEDED);
-                    attemptRepository.save(prior);
-                }
+            if (attemptId.equals(intent.getActiveAttemptId()) || targetAttemptStatus == AttemptStatus.AUTHORIZED) {
+                intent.setStatus(targetIntentStatus);
+                intent.setActiveAttemptId(attemptId);
             }
         }
 
@@ -249,6 +283,7 @@ public class WebhookServiceImpl implements WebhookService {
         outbox.setPayload(outboxPayload);
         outbox.setStatus(OutboxStatus.PENDING);
         outbox.setRetryCount(0);
+        outbox.setSourceEventId(webhookEvent.getEventId());
         outboxRepository.save(outbox);
 
         log.info("Webhook processed successfully! Reconciled intent {} to status: {}", intentId, targetIntentStatus);

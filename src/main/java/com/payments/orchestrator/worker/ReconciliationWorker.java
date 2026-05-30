@@ -41,10 +41,12 @@ public class ReconciliationWorker {
     private MeterRegistry meterRegistry;
 
     private final AtomicLong reconciliationBacklogGauge = new AtomicLong(0);
+    private final AtomicLong reconciliationOldestPendingAgeGauge = new AtomicLong(0);
 
     @PostConstruct
     void registerGauges() {
         meterRegistry.gauge("payment.reconciliation.backlog", reconciliationBacklogGauge);
+        meterRegistry.gauge("payment.pending.oldest.age", reconciliationOldestPendingAgeGauge);
     }
 
     /**
@@ -87,9 +89,17 @@ public class ReconciliationWorker {
                 }
             }
 
-            // 3. Telemetry: Count backlog size
+            // 3. Telemetry: Count backlog size & calculate oldest pending age
             long backlogSize = intentRepository.countByStatus(PaymentStatus.PENDING);
             reconciliationBacklogGauge.set(backlogSize);
+
+            intentRepository.findOldestPendingCreatedAt(PaymentStatus.PENDING).ifPresentOrElse(
+                oldestTime -> {
+                    long ageSeconds = Duration.between(oldestTime, OffsetDateTime.now(ZoneOffset.UTC)).getSeconds();
+                    reconciliationOldestPendingAgeGauge.set(Math.max(0, ageSeconds));
+                },
+                () -> reconciliationOldestPendingAgeGauge.set(0)
+            );
             
         } catch (Exception reconciliationCycleException) {
             log.error("Fatal exception in background reconciliation scheduler loop.", reconciliationCycleException);

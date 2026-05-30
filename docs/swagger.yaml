@@ -63,7 +63,6 @@ info:
     | `AUTHORIZED` | Issuer reserved funds — NOT yet settled |
     | `FAILED` | Definitive, unrecoverable failure |
     | `PENDING` | Outcome uncertain (timeout/network failure) — async resolution in progress |
-    | `SUPERSEDED` | This attempt replaced by a successful retry attempt |
 
     > **AUTHORIZED ≠ SETTLED.** Authorization means the issuer has reserved
     > funds. Actual settlement occurs through card network/acquirer rails and
@@ -157,12 +156,14 @@ paths:
       responses:
         '200':
           description: |
-            Payment successfully authorized. Issuer has reserved funds.
-            Note: This does not mean the payment is settled.
+            Payment creation request successfully completed with a definitive outcome.
+            Check the status field to determine if it is AUTHORIZED or FAILED.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/PaymentAuthorizedResponse'
+                oneOf:
+                  - $ref: '#/components/schemas/PaymentAuthorizedResponse'
+                  - $ref: '#/components/schemas/PaymentFailedResponse'
               example:
                 intent_id: "7f3e2c1a-4b5d-6e7f-8a9b-0c1d2e3f4a5b"
                 attempt_id: "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d"
@@ -630,8 +631,7 @@ paths:
 
         '422':
           description: |
-            Webhook event is structurally valid but cannot be applied.
-            Examples: illegal state transition, or event references a superseded attempt.
+            Webhook event is structurally valid but cannot be applied due to state constraints (e.g. illegal state transition).
           content:
             application/json:
               schema:
@@ -646,14 +646,6 @@ paths:
                       - field: "status"
                         issue: "FAILED is a terminal state"
                     request_id: "req_wh004"
-                    timestamp: "2026-05-27T12:00:00Z"
-                superseded_attempt:
-                  summary: Attempt already superseded
-                  value:
-                    error_code: "ATTEMPT_SUPERSEDED"
-                    message: "The referenced attempt has been superseded by a successful retry"
-                    details: []
-                    request_id: "req_wh005"
                     timestamp: "2026-05-27T12:00:00Z"
 
         '500':
@@ -910,6 +902,44 @@ components:
           format: date-time
           example: "2026-05-27T12:00:00Z"
 
+    PaymentFailedResponse:
+      type: object
+      required:
+        - intent_id
+        - attempt_id
+        - status
+        - provider_name
+        - error_code
+        - error_message
+        - timestamp
+      properties:
+        intent_id:
+          type: string
+          format: uuid
+          example: "7f3e2c1a-4b5d-6e7f-8a9b-0c1d2e3f4a5b"
+        attempt_id:
+          type: string
+          format: uuid
+          example: "1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d"
+        status:
+          type: string
+          enum: [FAILED]
+          example: "FAILED"
+        provider_name:
+          type: string
+          enum: [PSP_A, PSP_B]
+          example: "PSP_A"
+        error_code:
+          type: string
+          example: "CARD_DECLINED"
+        error_message:
+          type: string
+          example: "Transaction declined by credit card issuer"
+        timestamp:
+          type: string
+          format: date-time
+          example: "2026-05-27T12:00:00Z"
+
     PaymentAttemptSummary:
       type: object
       properties:
@@ -928,7 +958,7 @@ components:
           enum: [CARD, UPI]
         status:
           type: string
-          enum: [PROCESSING, AUTHORIZED, FAILED, PENDING, SUPERSEDED]
+          enum: [PROCESSING, AUTHORIZED, FAILED, PENDING]
         retry_count:
           type: integer
           minimum: 0
@@ -970,7 +1000,7 @@ components:
           type: string
         status:
           type: string
-          enum: [CREATED, PROCESSING, AUTHORIZED, FAILED, PENDING, SUPERSEDED]
+          enum: [CREATED, PROCESSING, AUTHORIZED, FAILED, PENDING]
           description: Canonical lifecycle state from the payment_intents table.
         transaction_amount:
           $ref: '#/components/schemas/MoneyAmount'
@@ -1005,7 +1035,7 @@ components:
           type: string
         status:
           type: string
-          enum: [CREATED, PROCESSING, AUTHORIZED, FAILED, PENDING, SUPERSEDED]
+          enum: [CREATED, PROCESSING, AUTHORIZED, FAILED, PENDING]
         updated_at:
           type: string
           format: date-time
@@ -1101,7 +1131,6 @@ components:
             - SETTLEMENT_INCOMPATIBLE
             - PAYMENT_NOT_FOUND
             - ILLEGAL_STATE_TRANSITION
-            - ATTEMPT_SUPERSEDED
             - INVALID_WEBHOOK_SIGNATURE
             - INTERNAL_ERROR
           example: "VALIDATION_ERROR"

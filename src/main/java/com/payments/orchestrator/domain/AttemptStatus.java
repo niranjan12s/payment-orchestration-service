@@ -4,6 +4,5 @@ public enum AttemptStatus {
     PROCESSING,
     AUTHORIZED,
     FAILED,
-    PENDING,
-    SUPERSEDED
+    PENDING
 }

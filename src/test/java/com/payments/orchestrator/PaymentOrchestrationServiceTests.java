@@ -87,7 +87,7 @@ class PaymentOrchestrationServiceTests {
                 .thenReturn(Optional.empty());
 
         // Setup mock returns on saves
-        when(intentRepository.save(any(PaymentIntent.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(intentRepository.saveAndFlush(any(PaymentIntent.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         PaymentIntent result = orchestrationService.createInitialPaymentState(cardRequest, idempotencyKey);
 
@@ -107,10 +107,10 @@ class PaymentOrchestrationServiceTests {
         assertThat(attempt.getPaymentMethodType()).isEqualTo(PaymentMethodType.CARD);
         assertThat(attempt.getPaymentTokenReference()).isEqualTo("vault_token_visa");
         assertThat(attempt.getStatus()).isEqualTo(AttemptStatus.PROCESSING);
-        assertThat(result.getFinalAttemptId()).isEqualTo(attempt.getAttemptId());
+        assertThat(result.getActiveAttemptId()).isEqualTo(attempt.getAttemptId());
 
         // Verify saves on all repository layers
-        verify(intentRepository, times(1)).save(any(PaymentIntent.class));
+        verify(intentRepository, times(2)).saveAndFlush(any(PaymentIntent.class));
         verify(eventRepository, times(1)).save(any(PaymentEvent.class));
         verify(outboxRepository, times(1)).save(any(PaymentOutbox.class));
     }
@@ -119,7 +119,7 @@ class PaymentOrchestrationServiceTests {
     void testCreateInitialPaymentStateUpiSuccess() {
         when(intentRepository.findByMerchantIdAndMerchantOrderId(any(UUID.class), anyString()))
                 .thenReturn(Optional.empty());
-        when(intentRepository.save(any(PaymentIntent.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(intentRepository.saveAndFlush(any(PaymentIntent.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         PaymentIntent result = orchestrationService.createInitialPaymentState(upiRequest, idempotencyKey);
 
@@ -146,7 +146,7 @@ class PaymentOrchestrationServiceTests {
                 .hasMessageContaining("Duplicate merchant order");
 
         // Verify no saves are executed
-        verify(intentRepository, never()).save(any(PaymentIntent.class));
+        verify(intentRepository, never()).saveAndFlush(any(PaymentIntent.class));
         verify(eventRepository, never()).save(any(PaymentEvent.class));
         verify(outboxRepository, never()).save(any(PaymentOutbox.class));
     }
@@ -170,7 +170,7 @@ class PaymentOrchestrationServiceTests {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("Unsupported payment method type");
 
-        verify(intentRepository, never()).save(any(PaymentIntent.class));
+        verify(intentRepository, never()).saveAndFlush(any(PaymentIntent.class));
     }
 
     @Test
@@ -183,7 +183,7 @@ class PaymentOrchestrationServiceTests {
 
         when(intentRepository.findByMerchantIdAndMerchantOrderId(any(UUID.class), anyString()))
                 .thenReturn(Optional.empty());
-        when(intentRepository.save(any(PaymentIntent.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(intentRepository.saveAndFlush(any(PaymentIntent.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         PaymentIntent result = orchestrationService.createInitialPaymentState(cardRequest, idempotencyKey);
 
@@ -209,7 +209,7 @@ class PaymentOrchestrationServiceTests {
         // With clear MDC context
         when(intentRepository.findByMerchantIdAndMerchantOrderId(any(UUID.class), anyString()))
                 .thenReturn(Optional.empty());
-        when(intentRepository.save(any(PaymentIntent.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(intentRepository.saveAndFlush(any(PaymentIntent.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         PaymentIntent result = orchestrationService.createInitialPaymentState(cardRequest, idempotencyKey);
 
@@ -229,7 +229,7 @@ class PaymentOrchestrationServiceTests {
                 .thenReturn(Optional.empty());
         
         // Mock a runtime database constraint error on event save
-        when(intentRepository.save(any(PaymentIntent.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(intentRepository.saveAndFlush(any(PaymentIntent.class))).thenAnswer(invocation -> invocation.getArgument(0));
         doThrow(new RuntimeException("Database error saving event")).when(eventRepository).save(any(PaymentEvent.class));
 
         assertThatThrownBy(() -> orchestrationService.createInitialPaymentState(cardRequest, idempotencyKey))

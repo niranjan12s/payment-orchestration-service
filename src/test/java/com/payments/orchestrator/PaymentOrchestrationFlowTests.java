@@ -19,6 +19,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
 import java.time.OffsetDateTime;
@@ -31,6 +32,7 @@ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilder
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 @AutoConfigureMockMvc
+@Transactional
 class PaymentOrchestrationFlowTests extends BaseIntegrationTest {
 
     @Autowired
@@ -339,12 +341,12 @@ class PaymentOrchestrationFlowTests extends BaseIntegrationTest {
         // Verify committed database state (1 intent, 2 attempts)
         PaymentIntent intent = intentRepository.findById(response.getIntentId()).orElseThrow();
         assertThat(intent.getStatus()).isEqualTo(PaymentStatus.AUTHORIZED);
-        assertThat(intent.getAttempts()).hasSize(2); // First is SUPERSEDED, second is AUTHORIZED!
+        assertThat(intent.getAttempts()).hasSize(2); // First is FAILED, second is AUTHORIZED!
         
         // Attempt 1 check
         assertThat(intent.getAttempts().stream()
                 .filter(a -> a.getProviderName().equals("PSP_A"))
-                .findFirst().orElseThrow().getStatus()).isEqualTo(AttemptStatus.SUPERSEDED);
+                .findFirst().orElseThrow().getStatus()).isEqualTo(AttemptStatus.FAILED);
                 
         // Attempt 2 check
         assertThat(intent.getAttempts().stream()

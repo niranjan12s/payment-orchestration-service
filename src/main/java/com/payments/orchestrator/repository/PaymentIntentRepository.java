@@ -53,4 +53,10 @@ public interface PaymentIntentRepository extends JpaRepository<PaymentIntent, UU
             @Param("retrySafeCodes") Set<String> retrySafeCodes,
             Pageable pageable
     );
+
+    @Query("SELECT MIN(i.createdAt) FROM PaymentIntent i WHERE i.status = :status")
+    Optional<java.time.OffsetDateTime> findOldestPendingCreatedAt(@Param("status") PaymentStatus status);
+
+    @Query("SELECT i FROM PaymentIntent i LEFT JOIN FETCH i.attempts WHERE i.intentId = :id")
+    Optional<PaymentIntent> findByIdWithAttempts(@Param("id") UUID id);
 }

@@ -2,7 +2,6 @@ package com.payments.orchestrator;
 
 import com.payments.orchestrator.domain.*;
 import com.payments.orchestrator.dto.WebhookRequest;
-import com.payments.orchestrator.exception.AttemptSupersededException;
 import com.payments.orchestrator.exception.InvalidWebhookSignatureException;
 import com.payments.orchestrator.exception.PaymentNotFoundException;
 import com.payments.orchestrator.exception.IllegalStateTransitionException;
@@ -124,7 +123,7 @@ class WebhookIngestionTests {
         request.setTimestamp(OffsetDateTime.parse("2026-05-27T12:00:05Z"));
 
         when(processedWebhookRepository.existsByProviderNameAndProviderEventId("PSP_A", "evt_wh_001")).thenReturn(false);
-        when(attemptRepository.findByProviderReference("provider_tx_9f8e7d6c")).thenReturn(Optional.of(activeAttempt));
+        when(attemptRepository.findByProviderNameAndProviderReference("PSP_A", "provider_tx_9f8e7d6c")).thenReturn(Optional.of(activeAttempt));
 
         // Trigger processing
         webhookService.processWebhook("PSP_A", signature, rawBody, request);
@@ -132,7 +131,7 @@ class WebhookIngestionTests {
         // Verify state transitions
         assertThat(pendingIntent.getStatus()).isEqualTo(PaymentStatus.AUTHORIZED);
         assertThat(activeAttempt.getStatus()).isEqualTo(AttemptStatus.AUTHORIZED);
-        assertThat(pendingIntent.getFinalAttemptId()).isEqualTo(activeAttempt.getAttemptId());
+        assertThat(pendingIntent.getActiveAttemptId()).isEqualTo(activeAttempt.getAttemptId());
 
         // Verify deduplication entry and audit records
         verify(processedWebhookRepository, times(1)).saveAndFlush(any(ProcessedWebhook.class));
@@ -208,7 +207,7 @@ class WebhookIngestionTests {
 
         // Mock attempt lookup returning empty Optional
         when(processedWebhookRepository.existsByProviderNameAndProviderEventId("PSP_A", "evt_wh_002")).thenReturn(false);
-        when(attemptRepository.findByProviderReference("provider_tx_unknown")).thenReturn(Optional.empty());
+        when(attemptRepository.findByProviderNameAndProviderReference("PSP_A", "provider_tx_unknown")).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> webhookService.processWebhook("PSP_A", signature, rawBody, request))
                 .isInstanceOf(PaymentNotFoundException.class)
@@ -216,7 +215,7 @@ class WebhookIngestionTests {
     }
 
     @Test
-    void testWebhookRejectionForSupersededAttempt() {
+    void testWebhookProcessingForInactiveAttempt() {
         String rawBody = "body";
         String tempSignature = "";
         try { tempSignature = SecurityUtils.hmacSha256Base64(webhookSecret, rawBody); } catch (Exception e) {}
@@ -227,15 +226,50 @@ class WebhookIngestionTests {
         request.setProviderReference("provider_tx_9f8e7d6c");
         request.setStatus("AUTHORIZED");
 
-        // Set attempt to SUPERSEDED
-        activeAttempt.setStatus(AttemptStatus.SUPERSEDED);
+        // Set activeAttemptId to a different UUID to simulate this attempt being inactive
+        pendingIntent.setActiveAttemptId(UUID.randomUUID());
 
         when(processedWebhookRepository.existsByProviderNameAndProviderEventId("PSP_A", "evt_wh_003")).thenReturn(false);
-        when(attemptRepository.findByProviderReference("provider_tx_9f8e7d6c")).thenReturn(Optional.of(activeAttempt));
+        when(attemptRepository.findByProviderNameAndProviderReference("PSP_A", "provider_tx_9f8e7d6c")).thenReturn(Optional.of(activeAttempt));
 
-        assertThatThrownBy(() -> webhookService.processWebhook("PSP_A", signature, rawBody, request))
-                .isInstanceOf(AttemptSupersededException.class)
-                .hasMessageContaining("superseded attempt");
+        webhookService.processWebhook("PSP_A", signature, rawBody, request);
+
+        // Verify that late/inactive attempt is successfully authorized and updates parent intent status
+        assertThat(activeAttempt.getStatus()).isEqualTo(AttemptStatus.AUTHORIZED);
+        assertThat(pendingIntent.getStatus()).isEqualTo(PaymentStatus.AUTHORIZED);
+    }
+
+    @Test
+    void testDuplicateAuthorizationDetection() {
+        String rawBody = "body";
+        String tempSignature = "";
+        try { tempSignature = SecurityUtils.hmacSha256Base64(webhookSecret, rawBody); } catch (Exception e) {}
+        final String signature = tempSignature;
+
+        WebhookRequest request = new WebhookRequest();
+        request.setEventId("evt_wh_dup");
+        request.setProviderReference("provider_tx_9f8e7d6c");
+        request.setStatus("AUTHORIZED");
+
+        // Simulate Intent is already AUTHORIZED (e.g. by another active attempt)
+        pendingIntent.setStatus(PaymentStatus.AUTHORIZED);
+        activeAttempt.setStatus(AttemptStatus.PENDING); // The targeted late attempt was pending
+
+        when(processedWebhookRepository.existsByProviderNameAndProviderEventId("PSP_A", "evt_wh_dup")).thenReturn(false);
+        when(attemptRepository.findByProviderNameAndProviderReference("PSP_A", "provider_tx_9f8e7d6c")).thenReturn(Optional.of(activeAttempt));
+
+        webhookService.processWebhook("PSP_A", signature, rawBody, request);
+
+        // Verify that the duplicate attempt was updated to AUTHORIZED to record reserved funds
+        assertThat(activeAttempt.getStatus()).isEqualTo(AttemptStatus.AUTHORIZED);
+
+        // Verify events and outbox for duplicate auth detection were persisted
+        verify(eventRepository, times(1)).save(argThat(event -> 
+                "DUPLICATE_AUTHORIZATION_DETECTED".equals(event.getEventType())
+        ));
+        verify(outboxRepository, times(1)).save(argThat(outbox -> 
+                "DUPLICATE_AUTHORIZATION_DETECTED".equals(outbox.getEventType())
+        ));
     }
 
     @Test
@@ -254,7 +288,7 @@ class WebhookIngestionTests {
         pendingIntent.setStatus(PaymentStatus.FAILED);
 
         when(processedWebhookRepository.existsByProviderNameAndProviderEventId("PSP_A", "evt_wh_004")).thenReturn(false);
-        when(attemptRepository.findByProviderReference("provider_tx_9f8e7d6c")).thenReturn(Optional.of(activeAttempt));
+        when(attemptRepository.findByProviderNameAndProviderReference("PSP_A", "provider_tx_9f8e7d6c")).thenReturn(Optional.of(activeAttempt));
 
         assertThatThrownBy(() -> webhookService.processWebhook("PSP_A", signature, rawBody, request))
                 .isInstanceOf(IllegalStateTransitionException.class)
@@ -276,7 +310,7 @@ class WebhookIngestionTests {
         pendingIntent.setStatus(PaymentStatus.AUTHORIZED);
 
         when(processedWebhookRepository.existsByProviderNameAndProviderEventId("PSP_A", "evt_wh_005")).thenReturn(false);
-        when(attemptRepository.findByProviderReference("provider_tx_9f8e7d6c")).thenReturn(Optional.of(activeAttempt));
+        when(attemptRepository.findByProviderNameAndProviderReference("PSP_A", "provider_tx_9f8e7d6c")).thenReturn(Optional.of(activeAttempt));
 
         // Trigger processing
         webhookService.processWebhook("PSP_A", signature, rawBody, request);

@@ -426,10 +426,6 @@
                 <div class="sim-node" id="node-PENDING">PENDING</div>
                 <div class="sim-node" id="node-FAILED">FAILED</div>
               </div>
-
-              <div class="review-path">
-                <div class="sim-node" id="node-MANUAL_REVIEW">MANUAL_REVIEW</div>
-              </div>
             </div>
             
             <div class="sim-rules-feed" id="simFeed">
@@ -447,7 +443,7 @@
               <button class="sim-act-btn" onclick="triggerSimState('AUTHORIZED')">Resolve: PROCESSING ➔ AUTHORIZED</button>
               <button class="sim-act-btn" onclick="triggerSimState('LATE_AUTH')">Late Webhook: PENDING ➔ AUTHORIZED</button>
               <button class="sim-act-btn" onclick="triggerSimState('ILLEGAL_OVERRIDE')">Override: FAILED ➔ AUTHORIZED (Hoax)</button>
-              <button class="sim-act-btn" onclick="triggerSimState('ESCALATE')">Escalate: PENDING ➔ MANUAL_REVIEW</button>
+              <button class="sim-act-btn" onclick="triggerSimState('ESCALATE')">Escalate: PENDING (Alerts >48h)</button>
             </div>
             
             <button class="btn btn-secondary reset-sim-btn" onclick="resetSim()">Reset State Engine</button>

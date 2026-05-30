@@ -172,7 +172,7 @@ public class GlobalExceptionHandler {
     }
 
     /**
-     * Handles invalid webhook signatures (401 Unauthorized).
+     * Handles invalid webhook signatures (422 Unprocessable Entity).
      */
     @ExceptionHandler(InvalidWebhookSignatureException.class)
     public ResponseEntity<ErrorResponse> handleInvalidWebhookSignature(InvalidWebhookSignatureException ex, HttpServletRequest request) {
@@ -186,7 +186,7 @@ public class GlobalExceptionHandler {
                 OffsetDateTime.now(ZoneOffset.UTC)
         );
 
-        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(error);
+        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY).body(error);
     }
 
     /**
@@ -207,23 +207,6 @@ public class GlobalExceptionHandler {
         return ResponseEntity.status(HttpStatus.NOT_FOUND).body(error);
     }
 
-    /**
-     * Handles superseded attempts webhook requests (422 Unprocessable Entity).
-     */
-    @ExceptionHandler(AttemptSupersededException.class)
-    public ResponseEntity<ErrorResponse> handleAttemptSuperseded(AttemptSupersededException ex, HttpServletRequest request) {
-        String requestId = getOrCreateRequestId(request);
-        log.warn("[X-Request-Id: {}] Superseded attempt update rejected: {}", requestId, ex.getMessage());
-
-        ErrorResponse error = new ErrorResponse(
-                "ATTEMPT_SUPERSEDED",
-                ex.getMessage(),
-                requestId,
-                OffsetDateTime.now(ZoneOffset.UTC)
-        );
-
-        return ResponseEntity.status(HttpStatus.UNPROCESSABLE_ENTITY).body(error);
-    }
 
     /**
      * Fallback handler for all uncaught/unexpected system errors (500 Internal Server Error).

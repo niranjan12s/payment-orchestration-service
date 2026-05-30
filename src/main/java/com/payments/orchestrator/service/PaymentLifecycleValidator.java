@@ -32,8 +32,7 @@ public class PaymentLifecycleValidator {
         boolean isValid = switch (current) {
             case CREATED -> target == PaymentStatus.PROCESSING;
             case PROCESSING -> target == PaymentStatus.AUTHORIZED || target == PaymentStatus.FAILED || target == PaymentStatus.PENDING;
-            case PENDING -> target == PaymentStatus.AUTHORIZED || target == PaymentStatus.FAILED || target == PaymentStatus.MANUAL_REVIEW;
-            case MANUAL_REVIEW -> target == PaymentStatus.AUTHORIZED || target == PaymentStatus.FAILED;
+            case PENDING -> target == PaymentStatus.AUTHORIZED || target == PaymentStatus.FAILED;
             case AUTHORIZED, FAILED -> false;
         };
 
@@ -46,7 +45,7 @@ public class PaymentLifecycleValidator {
 
     /**
      * Validates payment attempt state transitions.
-     * Terminal states for attempts (AUTHORIZED, FAILED, SUPERSEDED) are strictly immutable.
+     * Terminal states for attempts (AUTHORIZED, FAILED) are strictly immutable.
      * Throws IllegalStateTransitionException for illegal transitions.
      */
     public void validateAttemptTransition(AttemptStatus current, AttemptStatus target) {
@@ -54,16 +53,16 @@ public class PaymentLifecycleValidator {
             return; // Idempotent
         }
 
-        if (current == AttemptStatus.AUTHORIZED || current == AttemptStatus.FAILED || current == AttemptStatus.SUPERSEDED) {
+        if (current == AttemptStatus.AUTHORIZED || current == AttemptStatus.FAILED) {
             throw new IllegalStateTransitionException(
                     String.format("Cannot transition payment attempt from terminal state %s to %s", current, target)
             );
         }
 
         boolean isValid = switch (current) {
-            case PROCESSING -> target == AttemptStatus.AUTHORIZED || target == AttemptStatus.FAILED || target == AttemptStatus.PENDING || target == AttemptStatus.SUPERSEDED;
-            case PENDING -> target == AttemptStatus.AUTHORIZED || target == AttemptStatus.FAILED || target == AttemptStatus.SUPERSEDED;
-            case AUTHORIZED, FAILED, SUPERSEDED -> false;
+            case PROCESSING -> target == AttemptStatus.AUTHORIZED || target == AttemptStatus.FAILED || target == AttemptStatus.PENDING;
+            case PENDING -> target == AttemptStatus.AUTHORIZED || target == AttemptStatus.FAILED;
+            case AUTHORIZED, FAILED -> false;
         };
 
         if (!isValid) {

@@ -41,7 +41,7 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1 test
 | `WebhookIngestionTests` | Unit | 4+ | Signature, dedup, state transitions, replay |
 | `PaymentOrchestrationFlowTests` | Unit | 10+ | Core authorization flow, PSP responses |
 | `ReconciliationWorkerTests` | Unit | 8+ | PENDING resolution, escalation, terminal protection |
-| `RetryWorkerTests` | Unit | 8+ | Backoff, max attempts, DLQ, SUPERSEDED |
+| `RetryWorkerTests` | Unit | 8+ | Backoff, max attempts, DLQ, activeAttemptId |
 | `SecurityValidationTests` | Unit | 10+ | HMAC, nonce, timestamp, signature |
 | `IdempotencyServiceTests` | Unit | 6+ | Cache hit, conflict, expiry, hash |
 | `PaymentLifecycleValidatorTests` | Unit | 10+ | All state transitions, illegal transitions |
@@ -86,14 +86,14 @@ DB: payment_outbox rows ≥ 1 with status = PENDING
 | R-03 | Duplicate merchant order: same merchant_id + merchant_order_id, new idempotency key | Second payment by same merchant for same order | HTTP 409 DUPLICATE_ORDER_ID | No new intent created |
 | R-04 | Reconciliation resolves PENDING → AUTHORIZED | PSP_A.mode=SUCCESS, reconcileIntent() called | intent=AUTHORIZED, attempt=AUTHORIZED | 1 reconciliation event in payment_events |
 | R-05 | Reconciliation resolves PENDING → FAILED | PSP_A.mode=FAILURE, reconcileIntent() called | intent=FAILED, attempt=FAILED | PAYMENT_FAILED event written |
-| R-06 | Retry flow: PENDING intent → RetryService | PSP_A.mode=TIMEOUT → SUCCESS | intent=AUTHORIZED, N+1 attempt AUTHORIZED | Old attempt=SUPERSEDED |
+| R-06 | Retry flow: PENDING intent → RetryService | PSP_A.mode=TIMEOUT → SUCCESS | intent=AUTHORIZED, N+1 attempt AUTHORIZED | Old attempt=PENDING, active_attempt_id updated |
 | R-07 | Retry max exceeded (5 total attempts) | 5 failed attempts | intent=FAILED | PAYMENT_FAILED+DLQ event, outbox entry |
 | R-08 | Webhook for already-AUTHORIZED intent | Send AUTHORIZED webhook to AUTHORIZED intent | HTTP 200 acknowledged, no state change | intent remains AUTHORIZED |
 | R-09 | Webhook FAILED→AUTHORIZED on FAILED intent | Send AUTHORIZED webhook to FAILED intent | HTTP 422 ILLEGAL_STATE_TRANSITION | intent remains FAILED |
 | R-10 | Duplicate webhook event_id | Same event_id twice to /webhooks/PSP_A | HTTP 200 both times | 1 processed_webhook row |
 | R-11 | Outbox not re-published after PROCESSED | processPendingBatch() twice | Second cycle publishes 0 events | outbox rows remain PROCESSED |
 | R-12 | Reconciliation on AUTHORIZED intent | reconcileIntent() called on AUTHORIZED intent | No state change | intent remains AUTHORIZED |
-| R-13 | MANUAL_REVIEW escalation >48h | Intent created with created_at 49h ago | intent=MANUAL_REVIEW | Escalation counter incremented |
+| R-13 | PENDING critical alerting >48h | Intent created with created_at 49h ago | intent remains PENDING | Critical alert warning logged |
 | R-14 | Operational alert >24h | Intent created with created_at 25h ago | Alert metric counter incremented | intent remains PENDING |
 
 ### R-01 Detail: Idempotency Replay
@@ -153,7 +153,7 @@ DB assertion: PaymentIntent.status still = FAILED
 | N-16 | GET /payments/{id} with malformed UUID | `"intent_id": "not-a-uuid"` | 400 | VALIDATION_ERROR |
 | N-17 | Webhook with invalid PSP signature | `X-PSP-Signature: invalid_signature` | 422 | INVALID_WEBHOOK_SIGNATURE |
 | N-18 | Webhook referencing unknown provider_reference | No matching attempt in DB | 404 | PAYMENT_NOT_FOUND |
-| N-19 | Webhook for SUPERSEDED attempt | Attempt.status = SUPERSEDED | 422 | ATTEMPT_SUPERSEDED |
+| N-19 | Late webhook for inactive attempt | Target attempt matches inactive provider_ref | HTTP 200 | Targeted attempt authorized, parent intent resolved |
 | N-20 | Webhook from unknown provider | POST /webhooks/UNKNOWN_PSP | 404 | PAYMENT_NOT_FOUND |
 | N-21 | Empty request body | `{}` | 400 | VALIDATION_ERROR |
 | N-22 | Nonce reuse audit trail | N-05 reuse scenario | audit event in payment_events | Forensic log present |
@@ -190,7 +190,7 @@ Test class: [`ContainerIntegrationTests.java`](../src/test/java/com/payments/orc
 | I-07 | Nonce / duplicate order replay | `scenario07_duplicateMerchantOrder` | HTTP 409 DUPLICATE_ORDER_ID |
 | I-08 | Invalid webhook signature | `scenario08_invalidWebhookSignature` | HTTP 422 on "invalid_signature" header |
 | I-09 | Webhook deduplication | `scenario09_webhookDeduplication` | 1 ProcessedWebhook row for same event_id |
-| I-10 | Retry flow | `scenario10_retryFlow` | N+1 attempt=AUTHORIZED, old=SUPERSEDED |
+| I-10 | Retry flow | `scenario10_retryFlow` | N+1 attempt=AUTHORIZED, old=PENDING, active_attempt_id updated |
 | I-11 | Outbox publish | `scenario11_outboxPublish` | Outbox PENDING → PROCESSED, InMemoryPublisher has events |
 | I-12 | Illegal state transitions | `scenario12_illegalStateTransition` | AUTHORIZED→FAILED idempotent; FAILED→AUTHORIZED 422 |
 | I-13 | Missing idempotency key | `hardening_missingIdempotencyKey` | HTTP 4xx |

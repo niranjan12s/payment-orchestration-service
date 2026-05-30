@@ -82,6 +82,10 @@ class RetryWorkerTests {
         // Setup toolchain values for backoff capped checks
         ReflectionTestUtils.setField(retryWorker, "baseBackoffMs", 1000L);
         ReflectionTestUtils.setField(retryWorker, "maxBackoffMs", 300000L);
+        ReflectionTestUtils.setField(retryService, "self", retryService);
+
+        // Mock saveAndFlush to return the first argument
+        when(intentRepository.saveAndFlush(any(PaymentIntent.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         merchantId = UUID.randomUUID();
 
@@ -168,7 +172,7 @@ class RetryWorkerTests {
         PspResponse successResponse = new PspResponse(PspStatus.SUCCESS, "ref_retry_authorized_100", null, null);
         when(pspAConnector.authorize(any(PaymentAttempt.class), anyString())).thenReturn(successResponse);
 
-        when(intentRepository.findById(pendingIntent.getIntentId())).thenReturn(Optional.of(pendingIntent));
+        when(intentRepository.findByIdWithAttempts(pendingIntent.getIntentId())).thenReturn(Optional.of(pendingIntent));
         when(attemptRepository.findById(any(UUID.class))).thenAnswer(invocation -> {
             UUID id = invocation.getArgument(0);
             if (id.equals(failedAttempt.getAttemptId())) return Optional.of(failedAttempt);
@@ -189,8 +193,8 @@ class RetryWorkerTests {
         // Assert new attempt and intent are AUTHORIZED
         assertThat(pendingIntent.getStatus()).isEqualTo(PaymentStatus.AUTHORIZED);
         
-        // Prior Attempt 1 transitions to SUPERSEDED (Rule 3)
-        assertThat(failedAttempt.getStatus()).isEqualTo(AttemptStatus.SUPERSEDED);
+        // Prior Attempt 1 remains FAILED
+        assertThat(failedAttempt.getStatus()).isEqualTo(AttemptStatus.FAILED);
 
         // Verify successful outbox and events saved
         verify(eventRepository, times(1)).save(argThat(event -> 
@@ -212,7 +216,7 @@ class RetryWorkerTests {
         PspResponse hardDecline = new PspResponse(PspStatus.FAILED, null, "INSUFFICIENT_FUNDS", "Card declined: Insufficient funds");
         when(pspAConnector.authorize(any(PaymentAttempt.class), anyString())).thenReturn(hardDecline);
 
-        when(intentRepository.findById(pendingIntent.getIntentId())).thenReturn(Optional.of(pendingIntent));
+        when(intentRepository.findByIdWithAttempts(pendingIntent.getIntentId())).thenReturn(Optional.of(pendingIntent));
         when(attemptRepository.findById(any(UUID.class))).thenAnswer(invocation -> {
             UUID id = invocation.getArgument(0);
             if (id.equals(failedAttempt.getAttemptId())) return Optional.of(failedAttempt);
@@ -265,7 +269,7 @@ class RetryWorkerTests {
             maxIntent.addAttempt(att);
         }
 
-        when(intentRepository.findById(maxIntent.getIntentId())).thenReturn(Optional.of(maxIntent));
+        when(intentRepository.findByIdWithAttempts(maxIntent.getIntentId())).thenReturn(Optional.of(maxIntent));
 
         // Prepare retry attempt (5th attempt)
         PaymentAttempt result = retryService.prepareRetryAttempt(maxIntent.getIntentId());

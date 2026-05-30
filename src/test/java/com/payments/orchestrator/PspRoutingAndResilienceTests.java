@@ -148,8 +148,8 @@ class PspRoutingAndResilienceTests extends BaseIntegrationTest {
         pspAConnector.setMode("TIMEOUT");
         String idempKey = "idemp:" + cardAttempt.getAttemptId();
 
-        // Perform 5 failing calls (minimum number of calls to evaluate health is 5)
-        for (int i = 0; i < 5; i++) {
+        // Perform 20 failing calls (minimum number of calls to evaluate health is 20)
+        for (int i = 0; i < 20; i++) {
             assertThatThrownBy(() -> pspAConnector.authorize(cardAttempt, idempKey))
                     .isInstanceOf(PspTimeoutException.class);
         }

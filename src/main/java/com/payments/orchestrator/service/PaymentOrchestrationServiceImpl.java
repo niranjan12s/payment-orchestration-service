@@ -98,8 +98,8 @@ public class PaymentOrchestrationServiceImpl implements PaymentOrchestrationServ
         
         intent.setSettlementCurrencyCode(request.getSettlementAmount().getCurrencyCode());
         intent.setSettlementAmount(request.getSettlementAmount().getAmount());
-        intent.setStatus(PaymentStatus.PROCESSING);
-        intent.setFinalAttemptId(attemptId);
+        intent.setStatus(PaymentStatus.CREATED);
+        intent.setActiveAttemptId(attemptId);
 
         // 5. Create and map PaymentAttempt (associated bidirectionally)
         PaymentAttempt attempt = new PaymentAttempt();
@@ -114,11 +114,26 @@ public class PaymentOrchestrationServiceImpl implements PaymentOrchestrationServ
 
         intent.addAttempt(attempt);
 
+        // Save all records in a single database transaction (Cascade saves the linked attempt)
+        PaymentIntent savedIntent = intentRepository.saveAndFlush(intent);
+        
+        UUID dbIntentId = savedIntent.getIntentId();
+        UUID dbAttemptId = savedIntent.getAttempts().get(0).getAttemptId();
+
+        // Also update activeAttemptId to the actual dbAttemptId
+        savedIntent.setActiveAttemptId(dbAttemptId);
+        savedIntent = intentRepository.saveAndFlush(savedIntent);
+
+        // Force lazy collection load while session is active
+        if (savedIntent.getAttempts() != null) {
+            savedIntent.getAttempts().size();
+        }
+
         // 6. Create and map PaymentEvent (Audit Trail)
         PaymentEvent event = new PaymentEvent();
         event.setEventId(UUID.randomUUID());
-        event.setIntentId(intentId);
-        event.setAttemptId(attemptId);
+        event.setIntentId(dbIntentId);
+        event.setAttemptId(dbAttemptId);
         event.setCorrelationId(correlationId);
         event.setEventType("PAYMENT_INITIATED");
 
@@ -134,13 +149,13 @@ public class PaymentOrchestrationServiceImpl implements PaymentOrchestrationServ
         // 7. Create and map PaymentOutbox event
         PaymentOutbox outbox = new PaymentOutbox();
         outbox.setOutboxId(UUID.randomUUID());
-        outbox.setAggregateId(intentId);
+        outbox.setAggregateId(dbIntentId);
         outbox.setAggregateType("PaymentIntent");
         outbox.setCorrelationId(correlationId);
         outbox.setEventType("PAYMENT_CREATED");
 
         Map<String, Object> outboxPayload = new HashMap<>();
-        outboxPayload.put("intent_id", intentId.toString());
+        outboxPayload.put("intent_id", dbIntentId.toString());
         outboxPayload.put("merchant_id", request.getMerchantId().toString());
         outboxPayload.put("merchant_order_id", request.getMerchantOrderId());
         outboxPayload.put("status", "CREATED");
@@ -149,19 +164,12 @@ public class PaymentOrchestrationServiceImpl implements PaymentOrchestrationServ
         outbox.setPayload(outboxPayload);
         outbox.setStatus(OutboxStatus.PENDING);
         outbox.setRetryCount(0);
-
-        // Save all records in a single database transaction (Cascade saves the linked attempt)
-        PaymentIntent savedIntent = intentRepository.save(intent);
-        
-        // Force lazy collection load while session is active
-        if (savedIntent.getAttempts() != null) {
-            savedIntent.getAttempts().size();
-        }
+        outbox.setSourceEventId(event.getEventId());
 
         eventRepository.save(event);
         outboxRepository.save(outbox);
 
-        log.info("Successfully committed payment persistence state. intent_id: {}, attempt_id: {}", intentId, attemptId);
+        log.info("Successfully committed payment persistence state. intent_id: {}, attempt_id: {}", dbIntentId, dbAttemptId);
         return savedIntent;
     }
 
@@ -184,8 +192,8 @@ public class PaymentOrchestrationServiceImpl implements PaymentOrchestrationServ
         lifecycleValidator.validateAttemptTransition(attempt.getStatus(), targetAttemptStatus);
         attempt.setStatus(targetAttemptStatus);
 
-        // Map errors if failed
-        if (pspResponse.getStatus() == com.payments.orchestrator.dto.PspStatus.FAILED) {
+        // Map errors if failed or pending
+        if (pspResponse.getStatus() == com.payments.orchestrator.dto.PspStatus.FAILED || pspResponse.getStatus() == com.payments.orchestrator.dto.PspStatus.PENDING) {
             attempt.setErrorCode(pspResponse.getErrorCode());
             attempt.setErrorMessage(pspResponse.getErrorMessage());
         }
@@ -255,6 +263,7 @@ public class PaymentOrchestrationServiceImpl implements PaymentOrchestrationServ
         outbox.setPayload(outboxPayload);
         outbox.setStatus(OutboxStatus.PENDING);
         outbox.setRetryCount(0);
+        outbox.setSourceEventId(event.getEventId());
 
         // Save everything
         PaymentIntent savedIntent = intentRepository.save(intent);
@@ -274,7 +283,7 @@ public class PaymentOrchestrationServiceImpl implements PaymentOrchestrationServ
     @Override
     @Transactional
     public PaymentAttempt createFallbackAttempt(UUID intentId, UUID primaryAttemptId, String fallbackProvider) {
-        log.info("Creating fallback attempt for intentId: {}, superseding primaryAttemptId: {}, fallbackProvider: {}",
+        log.info("Creating fallback attempt for intentId: {}, primaryAttemptId: {}, fallbackProvider: {}",
                 intentId, primaryAttemptId, fallbackProvider);
 
         PaymentIntent intent = intentRepository.findById(intentId)
@@ -283,15 +292,14 @@ public class PaymentOrchestrationServiceImpl implements PaymentOrchestrationServ
         PaymentAttempt primaryAttempt = attemptRepository.findById(primaryAttemptId)
                 .orElseThrow(() -> new IllegalArgumentException("PaymentAttempt not found: " + primaryAttemptId));
 
-        // 1. Transition primary attempt from PROCESSING to SUPERSEDED
-        lifecycleValidator.validateAttemptTransition(primaryAttempt.getStatus(), AttemptStatus.SUPERSEDED);
-        primaryAttempt.setStatus(AttemptStatus.SUPERSEDED);
-        attemptRepository.save(primaryAttempt);
+        // Mark primary attempt as FAILED because the provider was blocked/unavailable
+        primaryAttempt.setStatus(AttemptStatus.FAILED);
+        primaryAttempt.setErrorCode("PROVIDER_BLOCKED");
+        primaryAttempt.setErrorMessage("Primary provider blocked by circuit breaker or failed to respond");
+        attemptRepository.saveAndFlush(primaryAttempt);
 
-        // 2. Create second attempt
-        UUID secondAttemptId = UUID.randomUUID();
+        // Create second attempt
         PaymentAttempt secondAttempt = new PaymentAttempt();
-        secondAttempt.setAttemptId(secondAttemptId);
         secondAttempt.setCorrelationId(intent.getCorrelationId());
         secondAttempt.setRequestId(intent.getRequestId());
         secondAttempt.setProviderName(fallbackProvider);
@@ -302,24 +310,32 @@ public class PaymentOrchestrationServiceImpl implements PaymentOrchestrationServ
         secondAttempt.setRetryCount(primaryAttempt.getRetryCount() + 1);
 
         intent.addAttempt(secondAttempt);
-        intent.setFinalAttemptId(secondAttemptId);
 
-        intentRepository.save(intent); // Cascades saves secondAttempt
+        PaymentIntent savedIntent = intentRepository.saveAndFlush(intent); // Cascades saves secondAttempt and generates UUID
+        
+        // Find the newly saved attempt to get its generated ID
+        PaymentAttempt savedAttempt = savedIntent.getAttempts().stream()
+                .filter(a -> fallbackProvider.equals(a.getProviderName()) && a.getStatus() == AttemptStatus.PROCESSING)
+                .findFirst()
+                .orElseThrow(() -> new IllegalStateException("Saved fallback attempt not found"));
+
+        savedIntent.setActiveAttemptId(savedAttempt.getAttemptId());
+        intentRepository.saveAndFlush(savedIntent);
 
         // 3. Create fallback transition audit event
         PaymentEvent event = new PaymentEvent();
         event.setEventId(UUID.randomUUID());
         event.setIntentId(intentId);
-        event.setAttemptId(secondAttemptId);
+        event.setAttemptId(savedAttempt.getAttemptId());
         event.setCorrelationId(intent.getCorrelationId());
         event.setEventType("PAYMENT_ATTEMPT_FAILOVER");
         event.setEventPayload(Map.of(
-                "superseded_attempt_id", primaryAttemptId.toString(),
+                "primary_attempt_id", primaryAttemptId.toString(),
                 "fallback_provider", fallbackProvider
         ));
         eventRepository.save(event);
 
-        log.info("Successfully persisted fallback attempt: {}", secondAttemptId);
-        return secondAttempt;
+        log.info("Successfully persisted fallback attempt: {}", savedAttempt.getAttemptId());
+        return savedAttempt;
     }
 }

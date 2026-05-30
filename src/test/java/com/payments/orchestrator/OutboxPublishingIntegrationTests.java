@@ -33,8 +33,6 @@ class OutboxPublishingIntegrationTests extends BaseIntegrationTest {
     @Autowired
     private PaymentOutboxRepository outboxRepository;
 
-    @Autowired
-    private InMemoryEventPublisher inMemoryEventPublisher;
 
     @Autowired
     private OutboxPublisherWorker outboxPublisherWorker;
@@ -58,7 +56,6 @@ class OutboxPublishingIntegrationTests extends BaseIntegrationTest {
         payload.put("merchant_order_id", "ORDER-OUTBOX-999");
         payload.put("amount", "100.00");
 
-        inMemoryEventPublisher.clear();
         outboxRepository.deleteAll();
     }
 
@@ -77,7 +74,7 @@ class OutboxPublishingIntegrationTests extends BaseIntegrationTest {
         outbox.setStatus(OutboxStatus.PENDING);
         outbox.setRetryCount(0);
 
-        outboxRepository.save(outbox);
+        PaymentOutbox saved = outboxRepository.save(outbox);
         entityManager.flush();
         entityManager.clear();
 
@@ -85,7 +82,7 @@ class OutboxPublishingIntegrationTests extends BaseIntegrationTest {
         outboxPublisherWorker.processPendingBatch();
 
         // 1. Verify entity transitioned to PROCESSED status
-        PaymentOutbox retrieved = outboxRepository.findById(outbox.getOutboxId()).orElseThrow();
+        PaymentOutbox retrieved = outboxRepository.findById(saved.getOutboxId()).orElseThrow();
         assertThat(retrieved.getStatus()).isEqualTo(OutboxStatus.PROCESSED);
         assertThat(retrieved.getProcessedAt()).isNotNull();
 
@@ -113,7 +110,7 @@ class OutboxPublishingIntegrationTests extends BaseIntegrationTest {
         outbox.setStatus(OutboxStatus.PENDING);
         outbox.setRetryCount(0);
 
-        outboxRepository.save(outbox);
+        PaymentOutbox saved = outboxRepository.save(outbox);
         entityManager.flush();
         entityManager.clear();
 
@@ -121,14 +118,14 @@ class OutboxPublishingIntegrationTests extends BaseIntegrationTest {
         for (int i = 0; i < 4; i++) {
             outboxPublisherWorker.processPendingBatch();
             
-            PaymentOutbox current = outboxRepository.findById(outbox.getOutboxId()).orElseThrow();
+            PaymentOutbox current = outboxRepository.findById(saved.getOutboxId()).orElseThrow();
             assertThat(current.getStatus()).isEqualTo(OutboxStatus.PENDING);
             assertThat(current.getRetryCount()).isEqualTo(i + 1);
         }
 
         // 5th trigger - exceeds DLQ threshold, moves to FAILED status
         outboxPublisherWorker.processPendingBatch();
-        PaymentOutbox finalRecord = outboxRepository.findById(outbox.getOutboxId()).orElseThrow();
+        PaymentOutbox finalRecord = outboxRepository.findById(saved.getOutboxId()).orElseThrow();
         assertThat(finalRecord.getStatus()).isEqualTo(OutboxStatus.FAILED);
         assertThat(finalRecord.getRetryCount()).isEqualTo(5);
 
@@ -153,7 +150,7 @@ class OutboxPublishingIntegrationTests extends BaseIntegrationTest {
         oldEvent.setPayload(payload);
         oldEvent.setStatus(OutboxStatus.PROCESSED);
         oldEvent.setProcessedAt(OffsetDateTime.now(ZoneOffset.UTC).minusHours(25));
-        outboxRepository.save(oldEvent);
+        PaymentOutbox savedOld = outboxRepository.save(oldEvent);
 
         // Event 2: processed 1 hour ago (Within the 24h retention window, should remain preserved)
         PaymentOutbox freshEvent = new PaymentOutbox();
@@ -164,7 +161,7 @@ class OutboxPublishingIntegrationTests extends BaseIntegrationTest {
         freshEvent.setPayload(payload);
         freshEvent.setStatus(OutboxStatus.PROCESSED);
         freshEvent.setProcessedAt(OffsetDateTime.now(ZoneOffset.UTC).minusHours(1));
-        outboxRepository.save(freshEvent);
+        PaymentOutbox savedFresh = outboxRepository.save(freshEvent);
 
         entityManager.flush();
         entityManager.clear();
@@ -173,7 +170,7 @@ class OutboxPublishingIntegrationTests extends BaseIntegrationTest {
         outboxPruningScheduler.pruneHistoricalOutboxRecords();
 
         // Assert only Event 1 was deleted
-        assertThat(outboxRepository.findById(oldEvent.getOutboxId())).isEmpty();
-        assertThat(outboxRepository.findById(freshEvent.getOutboxId())).isPresent();
+        assertThat(outboxRepository.findById(savedOld.getOutboxId())).isEmpty();
+        assertThat(outboxRepository.findById(savedFresh.getOutboxId())).isPresent();
     }
 }

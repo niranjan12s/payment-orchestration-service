@@ -557,21 +557,19 @@ HTTP 422 Unprocessable Entity
 | `FAILED` | *(terminal — none)* |
 
 > [!NOTE]
-> `SUPERSEDED` applies only to `PaymentAttempt` records, not to `PaymentIntent` status. It **shall never** appear in public API status enums or payment status response schemas.
+> Ownership is tracked cleanly via `active_attempt_id` on the `PaymentIntent`. Previous attempts remain in their historical outcome state (`PROCESSING`, `PENDING`, `AUTHORIZED`, `FAILED`) to preserve the audit trail.
 
 ---
 
-### FR-030 — PENDING Escalates to MANUAL_REVIEW After 48h
+### FR-030 — PENDING Critical Alerting After 48h
 
-When a `PaymentIntent` remains in `PENDING` state for more than 48 hours without resolution, the system **shall** escalate it to an internal `MANUAL_REVIEW` status.
+When a `PaymentIntent` remains in `PENDING` state for more than 48 hours without resolution, the system **shall** remain in `PENDING` but emit a critical escalation warning to operators.
 
 | Duration | Action |
 |---|---|
 | < 24h | Continue reconciliation polling |
-| ≥ 24h unresolved | Emit operational alert |
-| ≥ 48h unresolved | Transition to `MANUAL_REVIEW` |
-
-`MANUAL_REVIEW` **shall** be internal only. It **shall not** appear in public API status enums or be returned to external callers.
+| ≥ 24h unresolved | Emit operational warning alert |
+| ≥ 48h unresolved | Emit critical escalation alert |
 
 ---
 
@@ -651,11 +649,9 @@ The alert **shall** include:
 
 ---
 
-### FR-036 — Escalate to MANUAL_REVIEW After 48h
+### FR-036 — Critical Escalation Alert After 48h
 
-When a `PaymentIntent` has remained in `PENDING` state for more than 48 hours (after the operational alert in FR-035 has already fired), the reconciliation worker **shall** transition the intent to `MANUAL_REVIEW` (see FR-030).
-
-The intent **shall** be removed from the active reconciliation queue after escalation to prevent unbounded polling.
+When a `PaymentIntent` has remained in `PENDING` state for more than 48 hours (after the operational warning alert in FR-035 has already fired), the reconciliation worker **shall** emit a critical escalation operational metric alert (see FR-030). The intent **shall** remain in `PENDING` state.
 
 ---
 
@@ -704,11 +700,9 @@ Attempt rows **shall** never be mutated to represent a different retry. Each ret
 
 ---
 
-### FR-040 — Previous Attempt Marked SUPERSEDED
+### FR-040 — Active Attempt Ownership Transition
 
-When a retry creates a new `PaymentAttempt`, the previous active attempt **shall** be updated to `SUPERSEDED` before the new PSP call is made.
-
-`SUPERSEDED` is a terminal state for attempts. A `SUPERSEDED` attempt **shall** not be used for routing, status queries, or further retries.
+When a retry is initiated, a new attempt is created in `PROCESSING` status, and the `PaymentIntent`'s `active_attempt_id` **shall** be updated to point to the new attempt. The prior attempts associated with this payment intent **shall** remain in their original outcome state (e.g. `PENDING` or `FAILED`), preserving full audit history without introducing custom status mutations.
 
 ---
 
@@ -825,7 +819,7 @@ Incoming webhooks **shall** be correlated to the correct `PaymentAttempt` using 
 |---|---|
 | `provider_reference` found in active attempt | Proceed to state transition |
 | `provider_reference` not found | `404 PAYMENT_NOT_FOUND` |
-| `provider_reference` maps to `SUPERSEDED` attempt | `422 ATTEMPT_SUPERSEDED` |
+| `provider_reference` found in inactive (historical) attempt | Update targeted attempt state (late webhook audit trail) |
 
 ---
 
@@ -1079,17 +1073,17 @@ Complete index of all functional requirements with their area, status, and prior
 | FR-027 | PENDING → FAILED on reconciliation failure | State Machine | P0 |
 | FR-028 | AUTHORIZED and FAILED are terminal states | State Machine | P0 |
 | FR-029 | Illegal transitions → IllegalStateTransitionException → 422 | State Machine | P0 |
-| FR-030 | PENDING escalates to MANUAL_REVIEW after 48h | State Machine | P1 |
+| FR-030 | PENDING critical alerting after 48h | State Machine | P1 |
 | FR-031 | Reconciliation worker configurable interval | Reconciliation | P1 |
 | FR-032 | Query PSP status per pending intent | Reconciliation | P0 |
 | FR-033 | Resolve PENDING based on PSP response | Reconciliation | P0 |
 | FR-034 | SELECT FOR UPDATE SKIP LOCKED | Reconciliation | P0 |
 | FR-035 | Alert on intents unresolved > 24h | Reconciliation | P1 |
-| FR-036 | Escalate to MANUAL_REVIEW after 48h | Reconciliation | P1 |
+| FR-036 | Critical escalation alert after 48h | Reconciliation | P1 |
 | FR-037 | Reconciliation cannot transition terminal states | Reconciliation | P0 |
 | FR-038 | Retry only after confirmed no-auth | Retry Worker | P0 |
 | FR-039 | New PaymentAttempt row per retry | Retry Worker | P0 |
-| FR-040 | Previous attempt marked SUPERSEDED | Retry Worker | P0 |
+| FR-040 | Active attempt ownership transition | Retry Worker | P0 |
 | FR-041 | Exponential backoff: base * 2^retry_count | Retry Worker | P1 |
 | FR-042 | Maximum 5 retry attempts | Retry Worker | P1 |
 | FR-043 | Retry-safe error code classification | Retry Worker | P0 |

@@ -82,7 +82,7 @@ class IdempotencyServiceTests {
         assertThat(result.getRequestHash()).isEqualTo(expectedHash);
 
         ArgumentCaptor<PaymentIdempotency> captor = ArgumentCaptor.forClass(PaymentIdempotency.class);
-        verify(repository, times(1)).save(captor.capture());
+        verify(repository, times(1)).saveAndFlush(captor.capture());
 
         PaymentIdempotency saved = captor.getValue();
         assertThat(saved.getIdempotencyKey()).isEqualTo(idempotencyKey);

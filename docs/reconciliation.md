@@ -295,22 +295,8 @@ PENDING cannot remain indefinite.
 | Duration          | Action                  |
 | ----------------- | ----------------------- |
 | < 24h             | continue reconciliation |
-| >= 24h unresolved | emit operational alert  |
-| >= 48h unresolved | move to MANUAL_REVIEW   |
-
----
-
-## REQUIRED STATUS ADDITION
-
-Optional operational status:
-
-```text
-MANUAL_REVIEW
-```
-
-This MUST remain INTERNAL ONLY.
-
-It MUST NOT appear in public API status enums.
+| >= 24h unresolved | emit operational warning alert |
+| >= 48h unresolved | emit critical escalation alert |
 
 ---
 

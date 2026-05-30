@@ -15,6 +15,7 @@ import org.slf4j.MDC;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.annotation.Bean;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.math.BigDecimal;
@@ -25,6 +26,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+@Transactional
 class PaymentOrchestrationIntegrationTests extends BaseIntegrationTest {
 
     @Autowired
@@ -127,6 +129,7 @@ class PaymentOrchestrationIntegrationTests extends BaseIntegrationTest {
     }
 
     @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     void testTransactionRollbackOnRuntimeException() {
         String uniqueOrderId = "ORDER-ERR-" + UUID.randomUUID();
         CreatePaymentRequest rollbackRequest = new CreatePaymentRequest(

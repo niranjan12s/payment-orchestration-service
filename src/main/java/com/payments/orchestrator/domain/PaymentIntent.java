@@ -50,8 +50,8 @@ public class PaymentIntent {
     @Column(name = "status", nullable = false, length = 50)
     private PaymentStatus status;
 
-    @Column(name = "final_attempt_id")
-    private UUID finalAttemptId;
+    @Column(name = "active_attempt_id")
+    private UUID activeAttemptId;
 
     @Version
     @Column(name = "version", nullable = false)
@@ -181,12 +181,12 @@ public class PaymentIntent {
         this.status = status;
     }
 
-    public UUID getFinalAttemptId() {
-        return finalAttemptId;
+    public UUID getActiveAttemptId() {
+        return activeAttemptId;
     }
 
-    public void setFinalAttemptId(UUID finalAttemptId) {
-        this.finalAttemptId = finalAttemptId;
+    public void setActiveAttemptId(UUID activeAttemptId) {
+        this.activeAttemptId = activeAttemptId;
     }
 
     public Long getVersion() {

@@ -18,7 +18,7 @@ CREATE TABLE payment_intents (
             'FAILED',
             'PENDING'
         )),
-    final_attempt_id UUID,
+    active_attempt_id UUID,
     version BIGINT NOT NULL DEFAULT 0,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
@@ -42,8 +42,7 @@ CREATE TABLE payment_attempts (
             'PROCESSING',
             'AUTHORIZED',
             'FAILED',
-            'PENDING',
-            'SUPERSEDED'
+            'PENDING'
         )),
     retry_count INT NOT NULL DEFAULT 0,
     error_code VARCHAR(100),
@@ -90,6 +89,7 @@ CREATE TABLE payment_outbox (
             'FAILED'
         )),
     retry_count INT NOT NULL DEFAULT 0,
+    source_event_id UUID,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     processed_at TIMESTAMP WITH TIME ZONE
 );

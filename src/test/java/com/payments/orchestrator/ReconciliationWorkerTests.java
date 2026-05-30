@@ -183,7 +183,7 @@ class ReconciliationWorkerTests {
         assertThat(pendingIntent.getStatus()).isEqualTo(PaymentStatus.AUTHORIZED);
         assertThat(activeAttempt.getStatus()).isEqualTo(AttemptStatus.AUTHORIZED);
         assertThat(activeAttempt.getProviderReference()).isEqualTo("psp_ref_authorized_999");
-        assertThat(pendingIntent.getFinalAttemptId()).isEqualTo(activeAttempt.getAttemptId());
+        assertThat(pendingIntent.getActiveAttemptId()).isEqualTo(activeAttempt.getAttemptId());
 
         // Verify audit structures were written
         verify(eventRepository, times(1)).save(argThat(event -> 
@@ -281,29 +281,22 @@ class ReconciliationWorkerTests {
         // Mock intent created 50 hours ago
         pendingIntent.setCreatedAt(OffsetDateTime.now(ZoneOffset.UTC).minusHours(50));
         when(intentRepository.findById(pendingIntent.getIntentId())).thenReturn(Optional.of(pendingIntent));
+        when(attemptRepository.findById(activeAttempt.getAttemptId())).thenReturn(Optional.of(activeAttempt));
+
+        // Simulate status query returning PENDING
+        PspResponse pendingResponse = new PspResponse(PspStatus.PENDING, null, null, null);
+        when(pspAConnector.queryStatus(activeAttempt)).thenReturn(pendingResponse);
 
         // Trigger reconciliation
         reconciliationService.reconcileIntent(pendingIntent);
 
-        // Assert it transitioned to MANUAL_REVIEW and ceased automated PSP calls
-        assertThat(pendingIntent.getStatus()).isEqualTo(PaymentStatus.MANUAL_REVIEW);
-        verifyNoInteractions(pspAConnector);
+        // Assert it remained in PENDING status
+        assertThat(pendingIntent.getStatus()).isEqualTo(PaymentStatus.PENDING);
 
-        // Verify events and outbox written
-        verify(eventRepository, times(1)).save(argThat(event -> 
-                "RECONCILIATION_RESOLVED".equals(event.getEventType()) && 
-                "MANUAL_REVIEW".equals(event.getEventPayload().get("status"))
-        ));
-
-        verify(outboxRepository, times(1)).save(argThat(outbox -> 
-                "RECONCILIATION_RESOLVED".equals(outbox.getEventType()) && 
-                "MANUAL_REVIEW".equals(outbox.getPayload().get("status"))
-        ));
-
-        // Verify escalation metrics
+        // Verify critical 48h escalation metrics
         verify(meterRegistry, times(1)).counter(
                 eq("payment.reconciliation.escalations"),
-                eq("level"), eq("manual_review")
+                eq("level"), eq("critical_48h")
         );
     }
 

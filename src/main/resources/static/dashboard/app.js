@@ -91,7 +91,7 @@ try {
     rules: [
       "Reconciliation Worker: Polls PENDING intents every 45s using FOR UPDATE SKIP LOCKED.",
       "Retry Worker: Initiates backoff retries only after reconciliation confirms no duplicate authorization occurred.",
-      "Escalation Policy: >24 hours stuck PENDING fires warnings; >48 hours transitions to MANUAL_REVIEW."
+      "Escalation Policy: >24 hours stuck PENDING fires warnings; >48 hours fires critical alerting metrics."
     ],
     code: `// select PENDING items safely across worker clusters
 @Query("SELECT i FROM PaymentIntent i WHERE i.status = 'PENDING' FOR UPDATE SKIP LOCKED")
@@ -753,7 +753,7 @@ function updateResponseOutput(data) {
     transactionAmount:         'Transaction Amount',
     provider_name:       'PSP Provider',
     provider_reference:  'Provider Reference',
-    final_attempt_id:    'Final Attempt ID',
+    active_attempt_id:   'Active Attempt ID',
     error_code:          'Error Code',
     message:             'Message',
     timestamp:           'Timestamp',
@@ -1121,9 +1121,7 @@ function triggerSimState(action) {
       addSimFeed("Escalation blocked: Only PENDING intents stuck >48h can escalate.", true);
       return;
     }
-    simState = 'MANUAL_REVIEW';
-    highlightSimNode('MANUAL_REVIEW');
-    addSimFeed("Operational Escalation: Intent pending >48 hours moved to MANUAL_REVIEW. Backlog gauge updated.");
+    addSimFeed("Operational Escalation: Intent pending >48 hours triggers critical metric alerts. State remains PENDING.");
   }
 
   document.getElementById('simStatus').textContent = `CURRENT: ${simState}`;
