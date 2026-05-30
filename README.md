@@ -49,21 +49,7 @@ To launch the console, simply start the application and navigate to:
 
 ---
 
-## Architecture![High-Level System Architecture](docs/images/5_high_level_system_architecture.png)��───────┐ │
-                          │            │          Async Background Workers    │ │
-                          │            │                                      │ │
-                          │            │  OutboxPublisher   (1.5s poll)       │ │
-                          │            │  ReconciliationWorker (45s poll)     │ │
-                          │            │  RetryWorker          (2s poll)      │ │
-                          │            └──────────────────────────────────────┘ │
-                          └────────────────────────────────────────────────────┘
-                                        │                  │
-                              ┌─────────▼───┐     ┌────────▼──────┐
-                              │ PostgreSQL  │     │    Redis      │
-                              │     15      │     │      7        │
-                              └─────────────┘     └───────────────┘
-```
-
+## Architecture![High-Level System Architecture](docs/images/5_high_level_system_architecture.png)
 **Request flow summary:**
 
 1. Client sends `POST /api/v1/payments-orchestration/payments` with an `Idempotency-Key` header.
@@ -382,96 +368,96 @@ Sample health response:
 
 ```
 payment-orchestration-service/
-├── build.ps1                         # Windows build entrypoint; bootstraps JDK + Maven
-├── setup_toolchain.ps1               # Downloads Temurin JDK 21 + Maven 3.9.6 to .tools/
-├── run_tests.ps1                     # Convenience script: runs the full test suite
-├── docker-compose.yml                # PostgreSQL 15 + Redis 7 service definitions
-├── pom.xml                           # Maven POM (Spring Boot 3.3, Java 21)
-├── src/
-│
-└── docs/
-    ├── architecture.md                # Full architecture deep-dive
-    ├── reconciliation.md              # Reconciliation subsystem design
-    ├── swagger.yaml                   # OpenAPI 3.0 contract
-    ├── master_context.md              # Authoritative system specification
-    ├── FUNCTIONAL_REQUIREMENTS.md
-    ├── NON_FUNCTIONAL_REQUIREMENTS.md
-    ├── BUG_FIX_TRACKING.md
-    ├── TEST_CASES.md
-    └── PROMPT_LOG.md
-    ├── main/
-    │   ├── java/com/payments/orchestrator/
-    │   │   ├── PaymentOrchestratorApplication.java
-    │   │   ├── config/               # Spring beans, scheduling config
-    │   │   ├── controller/
-    │   │   │   ├── PaymentController.java   # POST /payments
-    │   │   │   └── WebhookController.java   # POST /webhooks/{provider}
-    │   │   ├── domain/               # JPA entities
-    │   │   │   ├── PaymentIntent.java
-    │   │   │   ├── PaymentAttempt.java
-    │   │   │   ├── PaymentEvent.java        # Immutable audit trail
-    │   │   │   ├── PaymentOutbox.java       # Transactional outbox record
-    │   │   │   ├── PaymentIdempotency.java
-    │   │   │   ├── ProcessedWebhook.java    # Webhook deduplication record
-    │   │   │   └── [enums: IntentStatus, AttemptStatus, OutboxStatus, ...]
-    │   │   ├── dto/                  # Request/response DTOs (Jackson + Swagger)
-    │   │   ├── exception/            # Domain exceptions + GlobalExceptionHandler
-    │   │   ├── health/
-    │   │   │   ├── DatabaseHealthIndicator.java
-    │   │   │   ├── RedisHealthIndicator.java
-    │   │   │   └── KafkaHealthIndicator.java
-    │   │   ├── repository/           # Spring Data JPA repositories (SKIP LOCKED queries)
-    │   │   ├── security/
-    │   │   │   ├── CachedBodyHttpServletRequest.java  # Raw body caching for HMAC
-    │   │   │   └── InMemoryMerchantSecretResolver.java
-    │   │   ├── service/
-    │   │   │   ├── PaymentOrchestrationFlowManager[Impl].java
-    │   │   │   ├── PaymentOrchestrationService[Impl].java
-    │   │   │   ├── IdempotencyService[Impl].java
-    │   │   │   ├── RoutingEngine[Impl].java
-    │   │   │   ├── PspConnector.java           # Interface
-    │   │   │   ├── PspAConnector.java           # CARD → PSP_A (mode: SUCCESS|FAILURE|TIMEOUT)
-    │   │   │   ├── PspBConnector.java           # UPI  → PSP_B (mode: SUCCESS|FAILURE|TIMEOUT)
-    │   │   │   ├── WebhookService[Impl].java
-    │   │   │   ├── ReconciliationService[Impl].java
-    │   │   │   ├── RetryService[Impl].java
-    │   │   │   ├── EventPublisher.java          # Interface
-    │   │   │   ├── InMemoryEventPublisher.java  # Active in local + test profiles
-    │   │   │   └── KafkaEventPublisher.java     # Production target
-    │   │   └── worker/
-    │   │       ├── OutboxPublisherWorker.java   # 1.5s fixed-delay poll
-    │   │       ├── ReconciliationWorker.java    # 45s fixed-delay poll
-    │   │       ├── RetryWorker.java             # 2s fixed-delay poll
-    │   │       ├── IdempotencyPruningScheduler.java
-    │   │       └── OutboxPruningScheduler.java
-    │   └── resources/
-    │       ├── application.yml                  # Base config (profile: local)
-    │       ├── application-local.yml            # Local DB + Redis coordinates
-    │       ├── logback-spring.xml               # JSON logging (Logstash encoder)
-    │       └── db/migration/
-    │           ├── V1__init_schema.sql
-    │           └── V2__add_manual_review_status.sql
-    │
-    └── test/
-        ├── java/com/payments/orchestrator/
-        │   ├── BaseIntegrationTest.java              # Testcontainers base (Redis dynamic port)
-        │   ├── ContainerIntegrationTests.java
-        │   ├── PaymentOrchestrationIntegrationTests.java
-        │   ├── PaymentOrchestrationFlowTests.java
-        │   ├── PaymentLifecycleStateMachineTests.java
-        │   ├── IdempotencyServiceTests.java
-        │   ├── OutboxPublishingIntegrationTests.java
-        │   ├── ReconciliationWorkerTests.java
-        │   ├── RetryWorkerTests.java
-        │   ├── WebhookIngestionTests.java
-        │   ├── PspRoutingAndResilienceTests.java
-        │   ├── SecurityValidationTests.java
-        │   ├── ObservabilityHardeningTests.java
-        │   ├── PersistenceSchemaIntegrationTests.java
-        │   ├── ApiSchemaLayerTests.java
-        │   └── PaymentOrchestrationServiceTests.java
-        └── resources/
-            └── application-test.yml              # tc: JDBC URL; Redis via DynamicPropertySource
++-- build.ps1                         # Windows build entrypoint; bootstraps JDK + Maven
++-- setup_toolchain.ps1               # Downloads Temurin JDK 21 + Maven 3.9.6 to .tools/
++-- run_tests.ps1                     # Convenience script: runs the full test suite
++-- docker-compose.yml                # PostgreSQL 15 + Redis 7 service definitions
++-- pom.xml                           # Maven POM (Spring Boot 3.3, Java 21)
++-- src/
+|
++-- docs/
+    +-- architecture.md                # Full architecture deep-dive
+    +-- reconciliation.md              # Reconciliation subsystem design
+    +-- swagger.yaml                   # OpenAPI 3.0 contract
+    +-- master_context.md              # Authoritative system specification
+    +-- FUNCTIONAL_REQUIREMENTS.md
+    +-- NON_FUNCTIONAL_REQUIREMENTS.md
+    +-- BUG_FIX_TRACKING.md
+    +-- TEST_CASES.md
+    +-- PROMPT_LOG.md
+    +-- main/
+    |   +-- java/com/payments/orchestrator/
+    |   |   +-- PaymentOrchestratorApplication.java
+    |   |   +-- config/               # Spring beans, scheduling config
+    |   |   +-- controller/
+    |   |   |   +-- PaymentController.java   # POST /payments
+    |   |   |   +-- WebhookController.java   # POST /webhooks/{provider}
+    |   |   +-- domain/               # JPA entities
+    |   |   |   +-- PaymentIntent.java
+    |   |   |   +-- PaymentAttempt.java
+    |   |   |   +-- PaymentEvent.java        # Immutable audit trail
+    |   |   |   +-- PaymentOutbox.java       # Transactional outbox record
+    |   |   |   +-- PaymentIdempotency.java
+    |   |   |   +-- ProcessedWebhook.java    # Webhook deduplication record
+    |   |   |   +-- [enums: IntentStatus, AttemptStatus, OutboxStatus, ...]
+    |   |   +-- dto/                  # Request/response DTOs (Jackson + Swagger)
+    |   |   +-- exception/            # Domain exceptions + GlobalExceptionHandler
+    |   |   +-- health/
+    |   |   |   +-- DatabaseHealthIndicator.java
+    |   |   |   +-- RedisHealthIndicator.java
+    |   |   |   +-- KafkaHealthIndicator.java
+    |   |   +-- repository/           # Spring Data JPA repositories (SKIP LOCKED queries)
+    |   |   +-- security/
+    |   |   |   +-- CachedBodyHttpServletRequest.java  # Raw body caching for HMAC
+    |   |   |   +-- InMemoryMerchantSecretResolver.java
+    |   |   +-- service/
+    |   |   |   +-- PaymentOrchestrationFlowManager[Impl].java
+    |   |   |   +-- PaymentOrchestrationService[Impl].java
+    |   |   |   +-- IdempotencyService[Impl].java
+    |   |   |   +-- RoutingEngine[Impl].java
+    |   |   |   +-- PspConnector.java           # Interface
+    |   |   |   +-- PspAConnector.java           # CARD -> PSP_A (mode: SUCCESS|FAILURE|TIMEOUT)
+    |   |   |   +-- PspBConnector.java           # UPI  -> PSP_B (mode: SUCCESS|FAILURE|TIMEOUT)
+    |   |   |   +-- WebhookService[Impl].java
+    |   |   |   +-- ReconciliationService[Impl].java
+    |   |   |   +-- RetryService[Impl].java
+    |   |   |   +-- EventPublisher.java          # Interface
+    |   |   |   +-- InMemoryEventPublisher.java  # Active in local + test profiles
+    |   |   |   +-- KafkaEventPublisher.java     # Production target
+    |   |   +-- worker/
+    |   |       +-- OutboxPublisherWorker.java   # 1.5s fixed-delay poll
+    |   |       +-- ReconciliationWorker.java    # 45s fixed-delay poll
+    |   |       +-- RetryWorker.java             # 2s fixed-delay poll
+    |   |       +-- IdempotencyPruningScheduler.java
+    |   |       +-- OutboxPruningScheduler.java
+    |   +-- resources/
+    |       +-- application.yml                  # Base config (profile: local)
+    |       +-- application-local.yml            # Local DB + Redis coordinates
+    |       +-- logback-spring.xml               # JSON logging (Logstash encoder)
+    |       +-- db/migration/
+    |           +-- V1__init_schema.sql
+    |           +-- V2__add_manual_review_status.sql
+    |
+    +-- test/
+        +-- java/com/payments/orchestrator/
+        |   +-- BaseIntegrationTest.java              # Testcontainers base (Redis dynamic port)
+        |   +-- ContainerIntegrationTests.java
+        |   +-- PaymentOrchestrationIntegrationTests.java
+        |   +-- PaymentOrchestrationFlowTests.java
+        |   +-- PaymentLifecycleStateMachineTests.java
+        |   +-- IdempotencyServiceTests.java
+        |   +-- OutboxPublishingIntegrationTests.java
+        |   +-- ReconciliationWorkerTests.java
+        |   +-- RetryWorkerTests.java
+        |   +-- WebhookIngestionTests.java
+        |   +-- PspRoutingAndResilienceTests.java
+        |   +-- SecurityValidationTests.java
+        |   +-- ObservabilityHardeningTests.java
+        |   +-- PersistenceSchemaIntegrationTests.java
+        |   +-- ApiSchemaLayerTests.java
+        |   +-- PaymentOrchestrationServiceTests.java
+        +-- resources/
+            +-- application-test.yml              # tc: JDBC URL; Redis via DynamicPropertySource
 ```
 
 ---

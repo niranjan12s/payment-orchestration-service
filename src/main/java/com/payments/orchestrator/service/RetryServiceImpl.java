@@ -20,6 +20,11 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.*;
 
+/**
+ * Implementation of {@link RetryService} that processes asynchronous scheduled retries for pending payment intents.
+ * It manages retry attempt preparations, safe retry limit controls, external authorization queries outside
+ * database transactions, outcome resolution, and DLQ escalation for exhausted retries.
+ */
 @Service
 public class RetryServiceImpl implements RetryService {
 
@@ -57,8 +62,11 @@ public class RetryServiceImpl implements RetryService {
     private RetryServiceImpl self;
 
     /**
-     * Executes the non-transactional external retry authorization call and delegates outcomes
-     * to transactional boundaries, ensuring network calls never happen inside a database transaction.
+     * Executes the asynchronous retry pipeline for a payment intent. This retrieves or constructs the next
+     * retry attempt inside a transaction, performs a non-transactional external network authorization call to the PSP,
+     * and delegates final outcome persistence.
+     *
+     * @param intent the payment intent scheduled for retry
      */
     @Override
     public void executeRetry(PaymentIntent intent) {
@@ -103,8 +111,11 @@ public class RetryServiceImpl implements RetryService {
     }
 
     /**
-     * Atomically prepares the retry attempt. Marks old attempt as FAILED if still in processing/pending,
-     * checks limit constraints, creates a new attempt row (N+1), and persists initial state.
+     * Atomically validates retry preconditions, checks and enforces the maximum retry limit (DLQ transition),
+     * and creates a new (N+1) payment attempt record in the database.
+     *
+     * @param intentId the unique identifier of the payment intent to retry
+     * @return the newly prepared {@link PaymentAttempt}, or null if retry limit exceeded or intent is no longer pending
      */
     @Transactional
     public PaymentAttempt prepareRetryAttempt(UUID intentId) {
@@ -220,7 +231,13 @@ public class RetryServiceImpl implements RetryService {
     }
 
     /**
-     * Atomically resolves the final state of the intent and attempt from the retry response.
+     * Atomically resolves the outcome of the retry attempt from the PSP authorization response.
+     * Triggers authorized transitions on success, schedules additional backoffs on safe retry errors,
+     * and escalates to definitive failure if errors are unsafe or limits are reached.
+     *
+     * @param intentId the unique identifier of the payment intent
+     * @param attemptId the unique identifier of the payment attempt
+     * @param pspResponse the response received from the PSP authorize call
      */
     @Transactional
     public void resolveOutcome(UUID intentId, UUID attemptId, PspResponse pspResponse) {
@@ -367,7 +384,10 @@ public class RetryServiceImpl implements RetryService {
     }
 
     /**
-     * Determines retry safety by evaluating attempt failure error codes.
+     * Helper to classify whether a given error code indicates a transient error that is safe to retry.
+     *
+     * @param code the error code string returned by the PSP
+     * @return true if the error code is recognized as retry-safe, false otherwise
      */
     private boolean isErrorCodeRetrySafe(String code) {
         if (code == null) return false;

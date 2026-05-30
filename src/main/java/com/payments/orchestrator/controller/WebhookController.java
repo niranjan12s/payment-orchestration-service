@@ -15,6 +15,10 @@ import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 
+/**
+ * REST controller that handles incoming webhook callbacks from Payment Service Providers (PSPs)
+ * to update payment intent and attempt states asynchronously.
+ */
 @RestController
 @RequestMapping("/api/v1/payments-orchestration")
 public class WebhookController {
@@ -24,6 +28,15 @@ public class WebhookController {
     @Autowired
     private WebhookService webhookService;
 
+    /**
+     * Receives and processes an asynchronous webhook callback event from a Payment Service Provider (PSP).
+     *
+     * @param provider the identifier of the Payment Service Provider sending the callback
+     * @param signature the cryptographic signature header for webhook verification
+     * @param request the webhook payload containing event status and details
+     * @param servletRequest the HTTP servlet request containing raw body details for signature verification
+     * @return a response map confirming receipt and acknowledgment of the webhook event
+     */
     @PostMapping("/webhooks/{provider}")
     public ResponseEntity<Map<String, Object>> receiveWebhook(
             @PathVariable("provider") String provider,

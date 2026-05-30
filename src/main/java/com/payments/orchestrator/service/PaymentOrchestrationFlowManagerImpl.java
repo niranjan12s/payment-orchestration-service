@@ -18,6 +18,11 @@ import java.time.ZoneOffset;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
+/**
+ * Implementation of {@link PaymentOrchestrationFlowManager} that manages the end-to-end payment creation flow.
+ * It handles idempotency checks, initial state transactions, circuit breakers, safe transport retries,
+ * failovers to fallback PSPs, and outcome state updates.
+ */
 @Service
 public class PaymentOrchestrationFlowManagerImpl implements PaymentOrchestrationFlowManager {
 
@@ -41,6 +46,15 @@ public class PaymentOrchestrationFlowManagerImpl implements PaymentOrchestration
     @Autowired
     private MeterRegistry meterRegistry;
 
+    /**
+     * Processes an end-to-end payment transaction request, enforcing idempotency, selecting the routing connector,
+     * executing PSP authorization with failover capabilities, and updating final transaction states.
+     *
+     * @param request the create payment request containing payment details
+     * @param idempotencyKey the unique idempotency key for the request
+     * @param rawBody the raw request body payload for idempotency verification
+     * @return the create payment response indicating final authorization, pending, or failed state
+     */
     @Override
     public CreatePaymentResponse processPayment(CreatePaymentRequest request, String idempotencyKey, String rawBody) {
         log.info("Processing end-to-end payment creation flow. Order ID: {}, Idempotency Key: {}",
@@ -173,6 +187,13 @@ public class PaymentOrchestrationFlowManagerImpl implements PaymentOrchestration
 
     /**
      * Executes calling the PSP with immediate retry loop ONLY for safe transport failures.
+     *
+     * @param connector the selected PSP connector
+     * @param attempt the current payment attempt entity
+     * @param providerIdempKey the provider-specific idempotency key
+     * @return the PSP response from the authorization attempt
+     * @throws PspTimeoutException if an ambiguous timeout occurs (must not retry immediately)
+     * @throws CallNotPermittedException if the circuit breaker is open (must not retry)
      */
     private PspResponse executeWithSafeRetries(PspConnector connector, PaymentAttempt attempt, String providerIdempKey) {
         int maxAttempts = 3;
@@ -212,6 +233,9 @@ public class PaymentOrchestrationFlowManagerImpl implements PaymentOrchestration
 
     /**
      * Helper to classify safe transport failures (Connection reset, connect timeout) vs unsafe ones (read timeouts).
+     *
+     * @param t the throwable/exception to analyze
+     * @return true if the error is a safe transport failure that can be retried immediately, false otherwise
      */
     private boolean isSafeTransportFailure(Throwable t) {
         if (t == null) return false;

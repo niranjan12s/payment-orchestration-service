@@ -12,6 +12,11 @@ import java.time.ZoneOffset;
 import java.util.List;
 import java.util.UUID;
 
+/**
+ * SecurityValidator handles the security pipeline for incoming requests,
+ * enforcing merchant verification, timestamp drift checks (replay window),
+ * nonce uniqueness via Redis, and HMAC-SHA256 signature verification.
+ */
 @Component
 public class SecurityValidator {
 
@@ -25,6 +30,15 @@ public class SecurityValidator {
 
     /**
      * Executes the mandatory security verification pipeline in sequence.
+     *
+     * @param method the HTTP request method (e.g. POST)
+     * @param requestPath the request path (e.g. /api/v1/payments-orchestration/payments)
+     * @param requestBodyJson the raw HTTP request body string
+     * @param merchantIdStr the raw merchant ID string
+     * @param timestampStr the raw X-Timestamp string
+     * @param nonceStr the raw X-Nonce string
+     * @param signatureStr the raw X-Signature string
+     * @throws SecurityValidationException if any security check fails
      */
     public void validate(
             String method,

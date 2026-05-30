@@ -21,6 +21,11 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.*;
 
+/**
+ * Implementation of {@link ReconciliationService} that reconciles unresolved payment intents.
+ * It executes external status queries to PSP providers outside database transaction boundaries,
+ * evaluates escalation alerts for old pending payments, and atomically resolves states inside transactional borders.
+ */
 @Service
 public class ReconciliationServiceImpl implements ReconciliationService {
 
@@ -54,8 +59,11 @@ public class ReconciliationServiceImpl implements ReconciliationService {
     private MeterRegistry meterRegistry;
 
     /**
-     * Executes the non-transactional external reconciliation calls and delegates state updates
-     * to transactional boundaries, ensuring PSP calls never happen inside a database transaction.
+     * Reconciles a single payment intent by executing a non-transactional status query to the appropriate PSP
+     * provider, triggering escalation alerts if the transaction age exceeds thresholds, and delegating the outcome
+     * resolution to transactional handlers.
+     *
+     * @param intent the payment intent to reconcile
      */
     @Override
     public void reconcileIntent(PaymentIntent intent) {
@@ -139,6 +147,11 @@ public class ReconciliationServiceImpl implements ReconciliationService {
 
     /**
      * Atomically resolves the final state of the intent and attempt from the PSP query response.
+     * If the intent is already in a terminal state, this execution is ignored for safety.
+     *
+     * @param intentId the unique identifier of the payment intent
+     * @param attemptId the unique identifier of the payment attempt
+     * @param pspResponse the response from the PSP status query
      */
     @Transactional
     public void resolveOutcome(UUID intentId, UUID attemptId, PspResponse pspResponse) {
@@ -235,7 +248,12 @@ public class ReconciliationServiceImpl implements ReconciliationService {
     }
 
     /**
-     * Updates attempt retry metadata on query failures.
+     * Updates attempt retry metadata and intent timestamp on status query failures to allow backing off.
+     *
+     * @param intentId the unique identifier of the payment intent
+     * @param attemptId the unique identifier of the payment attempt
+     * @param errorCode the code indicating the query failure category
+     * @param errorMsg the descriptive message of the failure
      */
     @Transactional
     public void handleReconciliationQueryFailure(UUID intentId, UUID attemptId, String errorCode, String errorMsg) {

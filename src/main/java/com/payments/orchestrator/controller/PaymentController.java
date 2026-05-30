@@ -21,6 +21,10 @@ import org.springframework.web.bind.annotation.*;
 import java.nio.charset.StandardCharsets;
 import java.util.UUID;
 
+/**
+ * REST controller that exposes endpoints for creating and managing payment intents
+ * within the Payment Orchestration system.
+ */
 @RestController
 @RequestMapping("/api/v1/payments-orchestration")
 public class PaymentController {
@@ -33,6 +37,16 @@ public class PaymentController {
     @Autowired
     private PaymentIntentRepository intentRepository;
 
+    /**
+     * Authorizes and creates a new payment intent based on the provided request details.
+     * Ensures idempotency using the supplied idempotency key.
+     *
+     * @param request the payment details and configuration
+     * @param idempotencyKey unique key to prevent duplicate processing of the transaction
+     * @param servletRequest the HTTP servlet request containing raw body details
+     * @return a response containing the payment intent creation status and details
+     * @throws IllegalArgumentException if the idempotency key is missing or blank
+     */
     @PostMapping("/payments")
     public ResponseEntity<CreatePaymentResponse> createPayment(
             @RequestBody @Valid CreatePaymentRequest request,
@@ -65,6 +79,13 @@ public class PaymentController {
         return ResponseEntity.ok(response);
     }
 
+    /**
+     * Retrieves the details of a specific payment intent by its unique identifier.
+     *
+     * @param intentId the unique UUID of the payment intent
+     * @return the retrieved payment intent
+     * @throws PaymentNotFoundException if no payment intent is found with the specified ID
+     */
     @GetMapping("/payments/{intentId}")
     @Transactional(readOnly = true)
     public ResponseEntity<PaymentIntent> getIntent(@PathVariable("intentId") UUID intentId) {
@@ -76,6 +97,13 @@ public class PaymentController {
         return ResponseEntity.ok(intent);
     }
 
+    /**
+     * Retrieves the status of the latest payment intent associated with a merchant order ID.
+     *
+     * @param merchantOrderId the merchant-provided unique identifier for the order
+     * @return the status response of the latest matching payment intent
+     * @throws PaymentNotFoundException if no payment intent is found with the specified merchant order ID
+     */
     @GetMapping("/payments/status/{merchantOrderId}")
     @Transactional(readOnly = true)
     public ResponseEntity<PaymentStatusResponse> getStatus(@PathVariable("merchantOrderId") String merchantOrderId) {

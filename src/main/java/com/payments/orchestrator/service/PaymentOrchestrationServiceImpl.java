@@ -19,6 +19,11 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
+/**
+ * Implementation of {@link PaymentOrchestrationService} responsible for managing payment transactional lifecycle states,
+ * persisting initial payment intents and attempts, updating outcome states from PSP responses, and establishing
+ * fallback attempts during failover scenarios.
+ */
 @Service
 public class PaymentOrchestrationServiceImpl implements PaymentOrchestrationService {
 
@@ -42,6 +47,16 @@ public class PaymentOrchestrationServiceImpl implements PaymentOrchestrationServ
     @Autowired
     private PspErrorClassifier errorClassifier;
 
+    /**
+     * Atomically initializes the database states for a new payment intent and its primary attempt,
+     * performs merchant order unique constraints checking, routes the payment to the appropriate PSP,
+     * and persists initial auditing and outbox events.
+     *
+     * @param request the create payment request details
+     * @param idempotencyKey the unique idempotency key
+     * @return the initialized and persisted {@link PaymentIntent}
+     * @throws DuplicateMerchantOrderException if a payment with the same merchant ID and order ID already exists
+     */
     @Override
     @Transactional
     public PaymentIntent createInitialPaymentState(CreatePaymentRequest request, String idempotencyKey) {
@@ -173,6 +188,15 @@ public class PaymentOrchestrationServiceImpl implements PaymentOrchestrationServ
         return savedIntent;
     }
 
+    /**
+     * Atomically updates the final outcome of a payment attempt and intent based on the PSP response,
+     * transitions states according to the payment lifecycle, and registers auditing and outbox events.
+     *
+     * @param intentId the unique identifier of the payment intent
+     * @param attemptId the unique identifier of the payment attempt
+     * @param pspResponse the response received from the PSP
+     * @return the updated {@link PaymentIntent}
+     */
     @Override
     @Transactional
     public PaymentIntent updatePaymentOutcome(UUID intentId, UUID attemptId, com.payments.orchestrator.dto.PspResponse pspResponse) {
@@ -280,6 +304,15 @@ public class PaymentOrchestrationServiceImpl implements PaymentOrchestrationServ
         return savedIntent;
     }
 
+    /**
+     * Atomically marks the primary attempt as failed and registers a new fallback attempt in PROCESSING status,
+     * updates the active attempt link in the payment intent, and persists failover audit events.
+     *
+     * @param intentId the unique identifier of the payment intent
+     * @param primaryAttemptId the identifier of the failed primary attempt
+     * @param fallbackProvider the name of the fallback PSP provider
+     * @return the newly created fallback {@link PaymentAttempt}
+     */
     @Override
     @Transactional
     public PaymentAttempt createFallbackAttempt(UUID intentId, UUID primaryAttemptId, String fallbackProvider) {

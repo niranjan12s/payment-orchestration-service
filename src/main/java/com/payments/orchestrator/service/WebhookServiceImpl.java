@@ -25,6 +25,11 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.*;
 
+/**
+ * Implementation of {@link WebhookService} that handles asynchronous callback webhooks from Payment Service Providers (PSPs).
+ * It verifies HMAC signatures, ensures event processing idempotency (deduplication), maps webhook statuses,
+ * transitions payment attempt and intent lifecycles, and registers downstream outbox and auditing events.
+ */
 @Service
 public class WebhookServiceImpl implements WebhookService {
 
@@ -57,6 +62,19 @@ public class WebhookServiceImpl implements WebhookService {
     @Value("${orchestrator.psp.psp-b.webhook-secret:secret_psp_b}")
     private String pspBSecret;
 
+    /**
+     * Processes an incoming callback webhook from a PSP provider, validating the HMAC signature,
+     * deduplicating the event, correlating it with an existing payment attempt, and atomically
+     * applying the new status outcome.
+     *
+     * @param provider the identifier of the PSP sending the webhook (e.g., PSP_A, PSP_B)
+     * @param signature the incoming signature header value
+     * @param rawBody the raw payload request body used for signature verification
+     * @param request the mapped webhook request details
+     * @throws InvalidWebhookSignatureException if the HMAC signature verification fails
+     * @throws PaymentNotFoundException if no matching attempt or intent can be correlated
+     * @throws IllegalStateTransitionException if the webhook attempts an invalid state transition (e.g., FAILED -> AUTHORIZED)
+     */
     @Override
     @Transactional
     public void processWebhook(String provider, String signature, String rawBody, WebhookRequest request) {
@@ -295,6 +313,12 @@ public class WebhookServiceImpl implements WebhookService {
         ).increment();
     }
 
+    /**
+     * Persists the webhook deduplication record to the database to ensure idempotency.
+     *
+     * @param provider the PSP provider name
+     * @param eventId the unique event identifier from the PSP
+     */
     private void saveProcessedWebhook(String provider, String eventId) {
         try {
             ProcessedWebhook processed = new ProcessedWebhook();
@@ -307,6 +331,13 @@ public class WebhookServiceImpl implements WebhookService {
         }
     }
 
+    /**
+     * Maps the string status received from the webhook to a {@link PaymentStatus} representing the PaymentIntent status.
+     *
+     * @param status the string status from the webhook
+     * @return the corresponding {@link PaymentStatus}
+     * @throws IllegalArgumentException if the webhook status is unrecognized
+     */
     private PaymentStatus mapWebhookStatusToIntentStatus(String status) {
         if ("AUTHORIZED".equalsIgnoreCase(status) || "SUCCESS".equalsIgnoreCase(status)) return PaymentStatus.AUTHORIZED;
         if ("FAILED".equalsIgnoreCase(status)) return PaymentStatus.FAILED;
@@ -314,6 +345,13 @@ public class WebhookServiceImpl implements WebhookService {
         throw new IllegalArgumentException("Unknown webhook status: " + status);
     }
 
+    /**
+     * Maps the string status received from the webhook to an {@link AttemptStatus} representing the PaymentAttempt status.
+     *
+     * @param status the string status from the webhook
+     * @return the corresponding {@link AttemptStatus}
+     * @throws IllegalArgumentException if the webhook status is unrecognized
+     */
     private AttemptStatus mapWebhookStatusToAttemptStatus(String status) {
         if ("AUTHORIZED".equalsIgnoreCase(status) || "SUCCESS".equalsIgnoreCase(status)) return AttemptStatus.AUTHORIZED;
         if ("FAILED".equalsIgnoreCase(status)) return AttemptStatus.FAILED;
